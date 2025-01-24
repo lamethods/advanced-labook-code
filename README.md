@@ -83,4 +83,53 @@ This repository contains the companion code for the book **“Advanced Learning 
 **Jinran Wu**, Australian Catholic University
 
 
+## Reviewers
+
+**Rémi Altamore**, University of Montpellier
+
+**Okan Bulut**, University of Alberta
+
+**Shaun Cavestany**, University of Eastern Finland
+
+**Javier Conde**, Universidad Politécnica de Madrid
+
+**Tudor Cristea**, Eindhoven University of Technology
+
+**Mouna Denden**, Université Polytechnique Hauts-de-France
+
+**Melis Dülge**r, Utrecht University
+
+**Ramy Elmoazen**, University of Eastern Finland
+
+**Hamza Hammami**, University of Tunis El Manar
+
+**Sami Heikkinen**, LAB University of Applied Sciences
+
+**Halil Kayaduman**, Inonu University
+
+**Ville Kivimäki**, Aalto University
+
+**Qinyi Liu**, University of Bergen
+
+**Nidia Guadalupe López Flores**, Reykjavik University
+
+**Sonsoles López-Pernas**, University of Eastern Finland
+
+**Joonas Merikko**, Annie Advisor
+
+**Kamila Misiejuk**, FernUniversität in Hagen
+
+**Ramkumar Rajendran**, IIT Bombay
+
+**Daevesh Singh**, IIT Bombay
+
+**Jaani Väisänen**, LAB University of Applied Sciences
+
+**Pavani Vemuri**, KU Leuven
+
+**Esteban Villalobos**, Université Toulouse III 
+
+**Megan Wiedbusch**, University of Central Florida
+
+**Tarid Wongvorachan**, University of Alberta
 
