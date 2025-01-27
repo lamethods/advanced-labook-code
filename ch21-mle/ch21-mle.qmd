@@ -1,0 +1,150 @@
+---
+title: "Detecting Long-Memory Psychological Processes in Academic Settings Using Whittle’s Maximum Likelihood Estimator: An Application with R"
+---
+
+## Analysis of the time series of $k$ using R
+
+### Libraries used
+
+```{r, message = FALSE, error = FALSE, warning = FALSE, include=FALSE}
+if (!require("stats")) install.packages("stats")
+if (!require("rio")) install.packages("rio")
+if (!require("dplyr")) install.packages("dplyr")
+if (!require("gt")) install.packages("gt")
+if (!require("ggplot2")) install.packages("ggplot2")
+```
+
+```{r, message = FALSE, error = FALSE, warning = FALSE}
+library(stats)
+library(rio)
+library(dplyr)
+library(gt)
+library(ggplot2)
+```
+
+### Data visualization
+
+```{r}
+#| label: fig-motivation-data
+#| fig-cap: "Preview of motivation data"
+#| out-width: 70%
+MotivationData <- import(paste0(
+  "https://github.com/lamethods/data2/raw/main/",
+  "motivation/Motivation.xlsx"
+))
+gt_preview(MotivationData, top_n = 8, bottom_n = 1)
+```
+
+```{r}
+#| label: fig-motivation-data-col
+#| fig-cap: "Preview of motivation data with additional column"
+MotivationData <- MotivationData %>%
+  mutate(K = (Ce * Bs) - (Ts * (1 - Ce))) 
+k_values <- (MotivationData$K) # store K values in a vector
+gt_preview(MotivationData, top_n = 8, bottom_n = 1)
+```
+
+```{r, fig.align='center', fig.cap = "Line plot of the evolution of the control parameter of approach and avoidance motivations $k$.", fig.width = 10, fig.height = 5}
+ggplot(MotivationData, aes(x = Week, y = K)) +
+  geom_line(colour = "turquoise4", linewidth = 0.8) +
+  geom_point(colour = "magenta", size = 1) +
+  labs(x = "Week", y = "k") +
+  scale_x_continuous(breaks = seq(0, 110, by = 10)) +
+  scale_y_continuous(breaks = seq(-1, 1, by = 0.5)) +
+  theme(
+    panel.background = element_rect(fill = "gray95")
+  )
+```
+
+### Application of Whittle’s MLE algorithm
+
+```{r}
+# Power spectral density estimation of vector x
+x <- (k_values)
+X <- scale(x)
+N <- length(X)
+m <- floor((N - 1) / 2)
+Y <- fft(X) # Fast Discrete Fourier Transform
+P <- (1 / (pi * N)) * abs(Y[2:(m + 1)])^2 # Power spectral density estimation
+w <- (2 * pi * (1:m)) / N # Fourier frequencies
+```
+
+
+```{r}
+# Whittle’s log-likelihood function with ARFIMA(0,d,0) theoretical PSD
+WLLF <- function(a, w, P, N) {
+```
+
+```{r}
+  Tp <- (1 / (2 * pi)) * (2 * sin(w / 2))^(1 - 2 * a) # ARFIMA theoretical PSD
+  c <- sum(P) / sum(Tp)
+  T <- c * Tp # Theoretical PSD adjusted 
+  lw <- -(2 / N) * sum(log(T) + (P / T)) # Whittle’s log-likelihood
+  return(lw)
+}
+```
+
+
+```{r}
+A <- optimize(function(a) WLLF(a, w, P, N), lower = 0, upper = 1, maximum = TRUE, 
+              tol = 0.0001)
+A <- A$maximum
+```
+
+```{r}
+# If the time series is non-stationary
+if (A >= 0.9999) {
+  XDiff <- diff(X)
+  YDiff <- fft(XDiff)
+  mdiff <- floor((N - 2) / 2)
+  Pdiff <- (1 / (pi * N)) * abs(YDiff[2:(mdiff + 1)])^2
+  wdiff <- (2 * pi * (1:mdiff)) / N
+  A <- optimize(function(a) WLLF(a, wdiff, Pdiff, N - 1), lower = 0, upper = 1, 
+                maximum = TRUE, tol = 0.0001)
+  A <- A$maximum
+  A <- A + 1
+}
+```
+
+```{r, include=FALSE}
+# Full algorithm 
+# Power spectral density estimation of vector x
+x <- (k_values)
+X <- scale(x)
+N <- length(X)
+m <- floor((N - 1) / 2)
+Y <- fft(X) # Fast Discrete Fourier Transform
+P <- (1 / (pi * N)) * abs(Y[2:(m + 1)])^2 # Power spectral density estimation
+w <- (2 * pi * (1:m)) / N # Fourier frequencies
+
+# Whittle’s log-likelihood function with ARFIMA(0,d,0) theoretical PSD
+WLLF <- function(a, w, P, N) {
+    Tp <- (1 / (2 * pi)) * (2 * sin(w / 2))^(1 - 2 * a) # ARFIMA theoretical PSD
+  c <- sum(P) / sum(Tp)
+  T <- c * Tp # Theoretical PSD adjusted 
+  lw <- -(2 / N) * sum(log(T) + (P / T)) # Whittle’s log-likelihood
+  return(lw)
+}
+
+A <- optimize(function(a) WLLF(a, w, P, N), lower = 0, upper = 1, maximum = TRUE, tol = 0.0001)
+A <- A$maximum
+
+# If the time series is non-stationary
+if (A >= 0.9999) {
+  XDiff <- diff(X)
+  YDiff <- fft(XDiff)
+  mdiff <- floor((N - 2) / 2)
+  Pdiff <- (1 / (pi * N)) * abs(YDiff[2:(mdiff + 1)])^2
+  wdiff <- (2 * pi * (1:mdiff)) / N
+  A <- optimize(function(a) WLLF(a, wdiff, Pdiff, N - 1), lower = 0, upper = 1, maximum = TRUE, tol = 0.0001)
+  A <- A$maximum
+  A <- A + 1
+}
+```
+
+### Result
+
+```{r}
+A
+```
+

@@ -1,0 +1,357 @@
+---
+title: "Using BERT-like Language Models for Automated Discourse Coding: A Primer and Tutorial"
+cache: true
+execute:
+  message: FALSE
+author: 
+   - name: "Sonsoles López-Pernas"
+     email: "sonsoles.lopez@uef.fi"
+     affil-id: 1,*
+   - name: "Kamila Misiejuk"
+     email: "kamila.misiejuk@fernuni-hagen.de"
+     affil-id: 2
+   - name: "Mohammed Saqr"
+     email: "mohammed.saqr@uef.fi"
+     affil-id: 1
+affiliations:
+  - id: 1
+    name: "University of Eastern Finland"
+  - id: 2
+    name: "FernUniversität in Hagen"
+  - id: "*"
+    name: "Corresponding author: Sonsoles López-Pernas, `sonsoles.lopez@uef.fi`"
+---
+
+
+# A case study on collaborative problem solving
+
+## The dataset
+
+## Automated discourse coding
+
+
+
+## Setting up the enviroment
+
+
+```{r}
+library(dplyr) # install.packages("dplyr")
+library(tidyr) # install.packages("tidyr")
+library(tibble) # install.packages("tibble")
+library(reticulate) # install.packages("reticulate")
+library(text) # install.packages("text")
+library(caret) # install.packages("caret")
+library(mltools) # install.packages("mltools")
+```
+
+
+```{r}
+# reticulate::install_miniconda()
+```
+
+Once done, you need to initialize the Python session as follows. This is an interactive command so you will need to enter "yes" in the terminal to advance.
+
+```{r}
+textrpp_initialize(save_profile = TRUE) # enter 'yes' in the terminal
+```
+
+```{r}
+# reticulate::py_install("datasets")
+
+datasets <- import("datasets") 
+
+dataset <- datasets$load_dataset("gkaradzhov/DeliData", cache_dir = "cache")
+```
+
+```{r}
+df_raw <- dataset$train$to_pandas()
+```
+
+
+```{r}
+table(df_raw$annotation_target)
+```
+
+
+```{r}
+classification <- c("Solution", "Reasoning", "Agree", "Disagree", "Moderation")
+df <- df_raw |> filter(annotation_target %in% classification) 
+```
+
+
+## Splitting the dataset
+
+```{r}
+seed = 123
+set.seed(seed) # for reproducibility
+trainIndex <- createDataPartition(df[["annotation_target"]], p = 0.15, 
+                                  list = FALSE, 
+                                  times = 1)
+
+# Creating training and testing datasets
+df_train <- df[trainIndex, ]
+df_test <- df[-trainIndex, ]
+```
+
+## Word embeddings 
+
+
+```{r}
+# Creating embeddings for the training data
+## BERT
+word_embeddings_bert <- textEmbed(df_train[,"clean_text"], 
+                            model = "bert-base-uncased",
+                            aggregation_from_tokens_to_word_types = "mean",
+                            keep_token_embeddings = FALSE)
+## RoBERTa
+word_embeddings_roberta <- textEmbed(df_train[,"clean_text"], 
+                            model = "roberta-base",
+                            aggregation_from_tokens_to_word_types = "mean",
+                            keep_token_embeddings = FALSE)
+## XLNet
+word_embeddings_xlnet <- textEmbed(df_train[,"clean_text"], 
+                            model = "xlnet-base-cased",
+                            aggregation_from_tokens_to_word_types = "mean",
+                            keep_token_embeddings = FALSE)
+# Creating embeddings for the testing data
+## BERT
+word_embeddings_bert_test <- textEmbed(df_test[,"clean_text"], 
+                            model = "bert-base-uncased",
+                            aggregation_from_tokens_to_word_types = "mean",
+                            keep_token_embeddings = FALSE)
+## RoBERTa
+word_embeddings_roberta_test <- textEmbed(df_test[,"clean_text"], 
+                            model = "roberta-base",
+                            aggregation_from_tokens_to_word_types = "mean",
+                            keep_token_embeddings = FALSE)
+## XLNet
+word_embeddings_xlnet_test <- textEmbed(df_test[,"clean_text"], 
+                            model = "xlnet-base-cased",
+                            aggregation_from_tokens_to_word_types = "mean",
+                            keep_token_embeddings = FALSE)
+```
+
+
+```{r}
+as_tibble(word_embeddings_bert$texts$texts)
+```
+
+## Training the model
+
+```{r, cache = TRUE}
+trained_model_bert <- textTrainRandomForest(
+  x = word_embeddings_bert$texts,
+  y = data.frame(as.factor(df_train[["annotation_target"]])),
+  outside_folds = 5,
+  simulate.p.value = TRUE,
+  append_first = TRUE,
+  multi_cores = TRUE,
+  seed = seed
+)
+
+trained_model_roberta <- textTrainRandomForest(
+  x = word_embeddings_roberta$texts,
+  y = data.frame(as.factor(df_train[["annotation_target"]])),
+  outside_folds = 5,
+  simulate.p.value = TRUE,
+  append_first = TRUE,
+  multi_cores = TRUE,
+  seed = seed
+)
+
+trained_model_xlnet <- textTrainRandomForest(
+  x = word_embeddings_xlnet$texts,
+  y = data.frame(as.factor(df_train[["annotation_target"]])),
+  outside_folds = 5,
+  simulate.p.value = TRUE,
+  append_first = TRUE,
+  multi_cores = TRUE,
+  seed = seed
+)
+```
+
+
+## Using the model to predict
+
+```{r }
+predicted_bert <- textPredict(
+  model_info = trained_model_bert,
+  word_embeddings = word_embeddings_bert_test$texts
+)
+predicted_roberta <- textPredict(
+  model_info = trained_model_roberta,
+  word_embeddings = word_embeddings_roberta_test$texts
+)
+predicted_xlnet <- textPredict(
+  model_info = trained_model_xlnet,
+  word_embeddings = word_embeddings_xlnet_test$texts
+)
+```
+ 
+## Evaluating the model
+
+```{r}
+rbind( # Combine the performance results of each model
+  trained_model_bert$results |> mutate(Model = "BERT"),
+  trained_model_roberta$results |> mutate(Model = "RoBERTa"),
+  trained_model_xlnet$results |> mutate(Model = "XLNet")) |>
+  select(-.estimator) |> 
+  pivot_wider(names_from = ".metric", values_from = ".estimate") 
+```
+ 
+
+```{r}
+results <- data.frame(
+  manual = as.factor(df_test$annotation_target),
+  bert = as.factor(predicted_bert$`texts__cv_method="validation_split"pred`),
+  roberta = as.factor(predicted_roberta$`texts__cv_method="validation_split"pred`),
+  xlnet = as.factor(predicted_xlnet$`texts__cv_method="validation_split"pred`)
+)
+```
+
+```{r}
+cm_bert <- confusionMatrix(results$bert, results$manual)
+cm_roberta <- confusionMatrix(results$roberta, results$manual)
+cm_xlnet <- confusionMatrix(results$xlnet, results$manual)
+
+rbind(Bert = cm_bert$overall, 
+      RoBERTa = cm_roberta$overall, 
+      XLnet = cm_xlnet$overall)
+```
+
+
+
+```{r}
+# Gwet AC1
+calculate_gwets_ac1 <- function(table) {
+  n <- sum(table)
+  po <- sum(diag(table)) / n
+  pe <- sum(pmax(rowSums(table), colSums(table))) / n^2
+  (po - pe) / (1 - pe)
+}
+
+extra_results <- data.frame(
+  gwets_ac1 = c(calculate_gwets_ac1(cm_bert$table),
+                calculate_gwets_ac1(cm_roberta$table),
+                calculate_gwets_ac1(cm_xlnet$table)),
+  mcc = c(mcc(results$bert, results$manual),
+          mcc(results$roberta, results$manual),
+          mcc(results$xlnet, results$manual)
+  )
+)
+
+rownames(extra_results) <- c("Bert", "RoBERTa", "XLnet")
+extra_results
+```
+
+
+```{r}
+# BERT
+byclass_bert <- cm_bert$byClass |> data.frame() |> 
+  rownames_to_column() |> # Convert rowname (code) to new column
+  pivot_longer(2:12) |> # Convert to a long format where each metric is a new row
+  mutate(Model = "BERT") # Add the model name as a column
+
+# RoBERTa
+byclass_roberta <- cm_roberta$byClass |> data.frame() |> 
+  rownames_to_column() |>
+  pivot_longer(2:12) |> 
+  mutate(Model = "RoBERTa")
+
+# XLNet
+byclass_xlnet <- cm_xlnet$byClass |> data.frame() |> 
+  rownames_to_column() |>
+  pivot_longer(2:12) |> 
+  mutate(Model = "XLNet")
+
+# Combine all results together
+byclass_all <- rbind(byclass_bert, byclass_roberta, byclass_xlnet)
+```
+
+
+```{r, fig.width = 8, fig.height = 8}
+# Model performance comparison by class
+ggplot(byclass_all, aes(x = name, y = value, group = Model, fill = Model)) + 
+  geom_col(position = "dodge2", width = 0.9) +
+  facet_wrap("rowname", ncol = 1) + 
+  theme_minimal() +
+  scale_fill_manual(values = c("#76B7B2", "#B07AA1", "#FF9DA7")) +
+  theme(legend.position = "bottom",
+        axis.text.x = element_text(angle = 45, hjust = 1)) + 
+  labs(fill = "Model") + xlab("") + ylab("") 
+```
+
+
+```{r}
+# Calculates with class is selected by most models
+getmode <- function(v) {
+   uniqv <- unique(v)
+   uniqv[which.max(tabulate(match(v, uniqv)))]
+}
+```
+
+```{r}
+results_with_vote <- results |> 
+  rowwise() |> 
+  mutate(vote = getmode(c(roberta, xlnet, bert))) |> 
+  ungroup()
+```
+
+
+```{r}
+cm_vote <- confusionMatrix(results_with_vote$vote, results_with_vote$manual)
+cm_vote$overall
+``` 
+
+
+## Impact on findings
+
+```{r}
+df_test_recoded <- df_test
+df_test_recoded$annotation_target <- results$roberta
+complete_ai <- rbind(df_train, df_test_recoded)
+```
+
+
+```{r}
+library(TraMineR)
+
+wider_human <- df |> group_by(group_id) |> 
+  mutate(order = seq_along(message_id)) |> 
+  pivot_wider(id_cols="group_id", names_from="order",values_from = "annotation_target")
+
+wider_ai <- complete_ai |> group_by(group_id) |> 
+  mutate(order = seq_along(message_id)) |> 
+  pivot_wider(id_cols="group_id", names_from="order",values_from = "annotation_target")
+
+seq_human <- seqdef(wider_human, 2:ncol(wider_human))
+seq_ai <- seqdef(wider_ai, 2:ncol(wider_ai))
+
+seqdplot(seq_human) 
+seqdplot(seq_ai)
+```
+
+
+```{r, layout = c(1,1), fig.width = 5, fig.height = 5}
+library(tna)
+# Compute transition probabilities
+transitions_ai <-  tna(seq_ai)
+transitions_human <-  tna(seq_human)
+
+# Plot human coded transition network
+plot(transitions_human)
+
+# Plot RoBERTa transition network
+plot(transitions_ai)
+
+# Plot difference network
+plot_compare(transitions_human, transitions_ai)
+
+# Run a permutation test to assess which differences are statistically significant
+permutation <- permutation_test(transitions_human, transitions_ai, it = 1000)
+
+# Plot the significant differences identified in the permutation test
+plot(permutation, minimum = 0.01)
+```
+
+

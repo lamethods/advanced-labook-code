@@ -1,0 +1,336 @@
+---
+title: "LLMs for Explainable Artificial Intelligence: Automating Natural Language Explanations of Predictive Analytics Models"
+author: 
+   - name: "Sonsoles López-Pernas"
+     email: "sonsoles.lopez@uef.fi"
+     affil-id: 1,*
+   - name: "Yige Song"
+     email: "yige.song1@unimelb.edu.au"
+     affil-id: 2
+   - name: "Eduardo Oliveira"
+     email: "eduardo.oliveira@unimelb.edu.au"
+     affil-id: 2
+   - name: "Mohammed Saqr"
+     email: "mohammed.saqr@uef.fi"
+     affil-id: 1
+affiliations:
+  - id: 1
+    name: "University of Eastern Finland"
+  - id: 2
+    name: "University of Melbourne"
+  - id: "*"
+    name: "Corresponding author: Sonsoles López-Pernas, `sonsoles.lopez@uef.fi`"
+---
+
+
+# Choosing an LLM and interacting with it via API
+
+```{r}
+library(ellmer) # install.packages("ellmer")
+```
+
+```{r}
+client <- chat_openai(
+    base_url = "http://localhost:1234/v1",
+    model = "lmstudio-ai/gemma-2b-it-GGUF",
+    api_key = 'lm-studio',
+    system_prompt = "You are an assistant that is expert in explainable AI for
+    providing learning analytics recommendations.",
+)
+```
+
+
+```{r}
+client$chat("Who are you?")
+```
+
+# A case study about predictive modeling
+
+## Model fitting
+
+```{r, setup}
+set.seed(50)
+# Load necessary libraries
+library(rio)
+library(tidyverse)
+library(rsample)
+library(e1071) 
+library(DALEX)
+```
+
+
+```{r,}
+theme_default_dalex <- theme_default_dalex + theme(plot.subtitle = element_text(size = 1))
+```
+
+
+```{r }
+# Import the data
+student_data <- 
+      import("https://raw.githubusercontent.com/lamethods/data2/main/lms/lms.csv")
+```
+
+
+
+```{r}
+# Standardize the numeric columns
+student_data_standardized <- student_data |>
+  mutate(across(where(is.numeric), ~scale(.) |> as.vector()))
+
+# Split the data into training and testing sets
+data_split <- initial_split(student_data_standardized, prop = 0.8)
+train_data <- training(data_split)
+test_data <- testing(data_split)
+```
+
+
+```{r}
+# Define the formula to specify the relationship between the target variable 
+# and the predictor variables
+formula <- Final_Grade ~ Freq_Course_View + Freq_Lecture_View + 
+  Freq_Forum_Consume + Freq_Forum_Contribute + Regularity_Course_View +
+  Regularity_Lecture_View + Regularity_Forum_Consume + 
+  Regularity_Forum_Contribute + Session_Count + Total_Duration + Active_Days
+
+# Fit the SVM model
+svm_fit <- svm(formula, data = train_data, kernel = "radial")
+```
+
+
+## Model performance
+
+
+```{r}
+set.seed(50)
+
+# Create an explainer with DALEX
+explainer_svm <- explain(
+  svm_fit,
+  data = dplyr::select(test_data, -Final_Grade),
+  y = test_data$Final_Grade,
+  label = "SVM",
+  verbose = FALSE
+)
+```
+
+```{r}
+mp_svm <- model_performance(explainer_svm)
+mp_svm
+```
+
+
+```{r}
+# Capture print output of the model performance
+mp_svm_output <- capture.output(mp_svm) 
+
+# Put it together into a single string of text
+mp_svm_print <- paste(mp_svm_output, collapse = "\n")
+
+# Combine generic prompt with our model performance
+mv_svm_prompt <- paste("You are helping teachers understand an ML model’s 
+prediction. The model predicts students' performance based on engagement measures. 
+I will give you the model performance evaluation. Come up  with a textual 
+non-technical explanation  of how well the model performs that I could include in 
+a dashboard. Take into account that the data has been standardized:",
+mp_svm_print,  collapse = "\n")
+
+# Send the prompt to the LLM and print the results
+client$chat(mv_svm_prompt)
+```
+
+## Feature importance
+
+```{r}
+#| label: fig-feat-imp
+#| fig-cap: "Feature importance"
+vi_svm <- feature_importance(explainer_svm)
+vi_plot <- plot(vi_svm)
+vi_plot 
+```
+
+
+```{r}
+vi_svm_text <- vi_plot$data |> # Extract data from the plot
+  arrange(desc(median)) |> # Order by median value
+  mutate(Features = # Create pairs (feature, median feature value)
+           paste0("(",variable,", ", round(median, 2), ")")) |> 
+  pull(Features) |> # Extract the column that contains the pairs
+  paste(collapse = "\n") # Create a single text variable that contains all pairs
+cat(vi_svm_text) # Print output
+```
+
+```{r}
+client$chat(paste("I will give you the results of permutation based 
+feature importance of a model computed with DALEX in the form 
+(feature, median_dropout_loss). Please provide a clear, concise and understandable 
+narrative  for teachers that explains how these contributions influence students' 
+predicted grades. Ensure the explanation highlights the significance of each 
+feature's contribution to the overall prediction in order",
+vi_svm_text, collapse = "\n"))
+```
+ 
+
+
+## Partial Dependence Profile
+
+
+
+```{r, fig.width = 4, fig.height = 3}
+#| label: fig-pdp-forum
+#| fig-cap: "PDP of `Freq_Forum_Contribute`"
+pdp_svm_fcontrib <- model_profile(explainer_svm, variables = "Freq_Forum_Contribute")
+plot(pdp_svm_fcontrib) + theme(plot.subtitle = element_blank())
+```
+
+```{r, fig.width = 4, fig.height = 3}
+#| label: fig-pdp-forum-limited
+#| fig-cap: "PDP of `Freq_Forum_Contribute` with limited x-axis values"
+pdp_svm_fcontrib3 <- model_profile(explainer_svm, variables = "Freq_Forum_Contribute", 
+              variable_splits = list(Freq_Forum_Contribute = -3:3)) 
+plot(pdp_svm_fcontrib3) + theme(plot.subtitle = element_blank())
+```
+
+```{r}
+pdp_svm_fcontrib3xy <- pdp_svm_fcontrib3$agr_profiles |> # Extract the data
+   mutate(Pair = # Create (x,y) pairs
+            paste0("(x = ", `_x_`, ", y = ", round(`_yhat_`, 2), ")")) |> 
+   pull(Pair) |> # Extract the x,y pairs
+   paste(collapse = "\n") # Join the pairs together in a single text variable
+   
+cat(pdp_svm_fcontrib3xy) # Print the (x,y) pairs
+```
+
+```{r}
+client$chat(paste("I will give you the PDP x-y pairs of 
+the feature Freq_Forum_Contribute. Please provide a concise one-sentence
+explanation for teachers about how this feature influences students' predicted 
+grades Ensure the explanation highlights how changes in the feature affect the 
+grade prediction.", pdp_svm_fcontrib3xy, collapse ="\n"))
+```
+
+```{r}
+# Get the feature names from the model
+features <- names(explainer_svm$data)
+
+# Initialize an empty list to store the results
+all_pdp_results <- list()
+# Loop through each feature in the model
+
+for (feature in features) {
+  # Create PDP for the current feature
+  variable_splits <- list()
+  variable_splits[[feature]] <- -3:3
+  pdp_svm <- model_profile(explainer_svm, variables = feature, 
+                           variable_splits = variable_splits)
+  
+  # Extract x-y pairs from the PDP
+  pdp_svm_xy <- pdp_svm$agr_profiles |>
+    mutate(Pair  = paste0("(x = ", `_x_`, ", y = ", round(`_yhat_`, 2), ")")) |> 
+    pull(Pair) |> 
+    paste(collapse = "\n")
+  
+  prompt <- paste("I will give you the PDP x-y pairs of the feature", 
+  feature, ".", "Please provide a concise, non-technical one-sentence explanation 
+  for teachers about how this feature influences students' predicted grades. ",
+  "Ensure the explanation highlights how changes in the feature affect the grade 
+  prediction.", pdp_svm_xy, collapse = "\n")
+  # Generate the response for the current feature
+  pdp_svm_res <- client$chat(prompt, echo = FALSE)
+  
+  # Store the result in the list
+  all_pdp_results[[feature]] <- pdp_svm_res
+  
+  # Print result
+  cat("\n\n", feature, "\n", sep = "")
+  
+  cat(all_pdp_results[[feature]]) 
+}
+```
+
+
+```{r, fig.width =9, fig.height = 7.5}
+#| label: fig-all-pdf
+#| fig-cap: "PDP plots of all features"
+pdp_svm <- model_profile(explainer_svm)
+plot(pdp_svm) + theme(plot.subtitle = element_blank(), text = element_text(size = 6))
+```
+
+## Local explanations
+
+```{r, eval = T, fig.width=6, fig.height=4}
+# SHAP explanations for student 2
+# Row 2 is student 2. 
+# We remove column 12 since it contains the grade that we want to predict
+student2 <- test_data[2, -12] 
+explanation2 <- predict_parts(explainer_svm, new_observation = student2)
+plot(explanation2)
+```
+
+
+```{r}
+local2 <- explanation2 |> data.frame() |> head(-1) |> # Extract explanation data
+  mutate(Tuple = # Create tuples (Feature name, Feature value, Feature contribution)
+           paste0("(",variable_name,", ", 
+                  round(as.numeric(variable_value), 2), ", ", 
+                  round(contribution, 2), ")")) |> 
+  pull(Tuple) |> # Extract tuples
+  paste(collapse = "\n") # Join tuples together in a single numeric variable
+cat(local2)
+```
+
+```{r}
+local_prompt <- paste("I will give a SHAP feature contribution explanation in the 
+format (feature_name, feature_value, contribution). Please provide a concise, 
+clear and understandable narrative for a teacher that explains how these 
+contributions influence students' predicted grades (standardized). Ensure the 
+explanation highlights the significance of each feature's contribution to the 
+overall prediction.\n", local2, collapse = "\n")
+
+client$chat(local_prompt)
+```
+
+```{r}
+local_explanation <- function(student) {
+  # Select a student to explain
+  instance <- test_data[student, -12]
+  # Get local explanations
+  predict_parts(explainer_svm, new_observation = instance)
+}
+```
+
+
+```{r}
+explanation_to_text <- function(student = 1) {
+  current <- local_explanation(student) 
+  current_numbers <- current |> data.frame() |> head(-1) |>
+  mutate(Tuple = paste0("(",variable_name,", ", 
+                        round(as.numeric(variable_value), 2), ", ", 
+                        round(contribution, 2), ")")) |> 
+  pull(Tuple) |> paste(collapse = "\n") 
+  
+  prompt <- paste("I will give a SHAP feature contribution explanation in the 
+  format (feature_name, feature_value, contribution). Please provide a concise, 
+  clear and understandable narrative for a teacher that explains how these 
+  contributions  influence the predicted price of the grade (standardized). 
+  Ensure the explanation highlights the significance of each feature's 
+  contribution to the overall prediction.\n", current_numbers, collapse = "\n")
+  
+  return (prompt)
+}
+```
+
+
+```{r}
+res <- test_data |> 
+  mutate(order = row_number()) |> # Get each student number
+  rowwise() |>  
+  mutate(prompt = explanation_to_text(order), # Generate each student's prompt
+         explanation = client$chat(prompt, echo = FALSE)) # Send the prompt to the LLM
+```
+
+
+```{r}
+cat(res[2 ,]$explanation)
+```
+
+ 

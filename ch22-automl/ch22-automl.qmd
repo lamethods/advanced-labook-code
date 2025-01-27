@@ -1,0 +1,352 @@
+---
+title: "Automating Individualized Machine Learning and AI Prediction using AutoML: The Case of Idiographic Predictions"
+author: 
+   - name: "Mohammed Saqr"
+     email: "mohammed.saqr@uef.fi"
+     affil-id: 1,*
+   - name: "Ahmed Tlili"
+     email: "ahmedtlili@ieee.org"
+     affil-id: 2
+   - name: "Sonsoles López-Pernas"
+     email: "sonsoles.lopez@uef.fi"
+     affil-id: 1
+affiliations:
+  - id: 1
+    name: "University of Eastern Finland"
+  - id: 2
+    name: "Beijing Normal University"
+  - id: "*"
+    name: "Corresponding author: Mohammed Saqr, `mohammed.saqr@uef.fi`"
+---
+
+# Tutorial: Using `h2o` for ML for idiographic ML
+
+```{r setup }
+set.seed(265)
+# Load necessary libraries
+library(tidyverse)  # For data manipulation
+library(h2o)    # For H2O ML platform
+
+# Read the dataset
+synthetic_data <- import("https://github.com/lamethods/data2/raw/main/srl/srl.RDS")
+```
+
+```{r}
+# Define the phone activity variables
+phone_vars <- c("meanpace", "steps", "freqscreen", "duration", 
+                "scrrenoff", "nightduroff", "maxoffscreennight")
+
+# Define the SRL variables
+srl_vars <- colnames(select(synthetic_data, efficacy:enjoyment))
+
+# Combine all variables into the Predictors list
+predictors <- c(srl_vars, phone_vars)
+
+# Set the response variable
+response_variable <- "learning"
+```
+
+## Building an idiographic model
+
+```{r, eval = FALSE}
+# Step 1: Initialize h2o with specified resources
+h2o.init(nthreads = 12, max_mem_size = "12G")  # Adjust memory and threads if necessary
+```
+
+```{r, eval = FALSE}
+# Step 2: Retrieve the specific name (e.g., the first unique name)
+specific_name <- unique(synthetic_data$name)[5]  
+
+# Step 3: Filter the dataset for the selected person and remove the 'name' column
+filtered_data <- synthetic_data %>%
+  filter(name == specific_name) %>%  # Filter rows where 'name' matches the selected person
+  select(-name)  # Exclude the 'name' column from the data
+
+# An alternative approach to selecting
+filtered_data <- synthetic_data %>%
+  filter(name == "Alice") %>%  # Filter rows where 'name' matches the selected person
+  select(-name)  # Exclude the 'Alice' column from the data
+```
+
+```{r}
+# Disable progress bar for clarity
+h2o.no_progress()
+# Step 4: Convert the filtered data into an h2o frame
+h2o_data <- as.h2o(filtered_data)  # Convert into an h2o format for processing
+```
+
+```{r}
+# Step 5: Split the h2o frame into training (80%) and testing (20%) sets
+# Use seed for reproducibility
+splits <- h2o.splitFrame(data = h2o_data, ratios = 0.8, seed = 256)  
+train_data_h2o <- splits[[1]]  # Training data (80%)
+test_data_h2o <- splits[[2]]   # Testing data (20%)
+```
+
+```{r}
+# Step 6: Define predictors and response variable for model training
+predictors <- setdiff(names(filtered_data), "learning")  
+response_variable <- "learning"  # Specify the response variable name
+```
+
+```{r}
+# Step 7: Train the model using h2o AutoML
+automl_model <- h2o.automl(
+  x = predictors,  # Predictor variables
+  y = response_variable,  # Response variable
+  training_frame = train_data_h2o,  # Training data
+  nfolds = 5,  # Number of cross-validation folds
+  max_runtime_secs = 900,  # Maximum runtime in seconds
+  seed = 256  # Random seed for reproducibility
+)
+```
+
+```{r message=FALSE, warning=FALSE}
+# Step 8: View the leaderboard of models
+leaderboard <- h2o.get_leaderboard(automl_model, extra_columns = "ALL")
+head(leaderboard, 10)
+```
+
+### Best models
+
+```{r}
+# Step 9: Extract the best-performing model
+best_model <- h2o.get_best_model(automl_model)
+```
+
+### Evaluation of the model
+
+```{r}
+# Step 9.1: Evaluate the best model's performance on the test data
+best_model_performance <- h2o.performance(best_model, newdata = test_data_h2o)
+
+# Step 9.2: Print the performance metrics on test data
+print(best_model_performance)
+
+# Step 9.3: Generate predictions on the test data
+predictions <- h2o.predict(best_model, test_data_h2o)
+```
+
+```{r}
+#Step 2: Convert the test data and predictions to R data frames}
+test_data_df <- as.data.frame(test_data_h2o) # Convert h2o test data to dataframe
+predictions_df <- as.data.frame(predictions)# Convert h2o predictions to dataframe
+
+# Step 3: Combine the predictions with the original test data
+result_df <- cbind(test_data_df, Predicted_Learning = predictions_df$predict)
+
+# Scatterplot of actual vs predicted values
+ggplot(result_df, aes(x = learning, y = Predicted_Learning)) +
+  geom_point(color = "blue", alpha = 0.5) +  # Scatter points
+  # Ideal line (y = x)
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "red") +  
+  labs(x = "Actual Learning",
+       y = "Predicted Learning") +
+  theme_minimal()
+
+# Create a residual column
+result_df <- result_df %>%
+  mutate(Residuals = learning - Predicted_Learning)
+
+# Scatterplot of residuals vs predicted values
+ggplot(result_df, aes(x = Predicted_Learning, y = Residuals)) +
+  geom_point(color = "darkred", alpha = 0.5) +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  labs(x = "Predicted Learning",
+       y = "Residuals") +
+  theme_minimal()
+```
+
+```{r}
+best_gbm <- h2o.get_best_model(automl_model, algorithm = "gbm")
+best_xgboost <- h2o.get_best_model(automl_model, algorithm = "xgboost")
+best_drf <- h2o.get_best_model(automl_model, algorithm = "drf")
+best_deeplearning <- h2o.get_best_model(automl_model, algorithm = "deeplearning")
+best_stackedensemble <- h2o.get_best_model(automl_model, algorithm = "stackedensemble")
+```
+
+```{r}
+# Run h2o.explain to explain the model's behavior
+explanained_drf <- h2o.explain(best_drf, test_data_h2o)
+
+# View the explanation output
+print(explanained_drf)
+```
+
+## Multiple idiographic models
+
+### Estimating multiple algorithms
+
+```{r}
+# Load necessary libraries
+library(dplyr)  # For data manipulation
+library(h2o)    # For H2O ML platform
+set.seed(265)
+# Read in the dataset
+synthetic_data <- readRDS("synthetic_Data_share.RDS")
+
+# Define the phone activity variables
+phone_vars <- c("meanpace", "steps", "freqscreen", "duration", 
+                     "scrrenoff", "nightduroff", "maxoffscreennight")
+
+# Define the SRL variables
+srl_vars <- colnames(select(synthetic_data, efficacy:enjoyment))
+
+# Combine all variables into the Predictors list
+predictors <- c(srl_vars, phone_vars)
+
+# Set the response variable
+response_variable <- "learning"
+```
+
+```{r}
+# Initialize h2o with specified resources
+h2o.init(nthreads = -1, max_mem_size = "60G")
+
+# Get unique dataset names (subsets)
+dataset_names <- unique(synthetic_data$name)
+
+# Set seed for reproducibility
+set.seed(2202)
+
+# Initialize a list to store results for each subset
+results <- list()
+
+# Loop through each unique dataset (name)
+for (specific_name in dataset_names) {
+  
+  # Filter the dataset for the current subset and remove the 'name' column
+  filtered_data <- synthetic_data %>%
+    filter(name == specific_name) %>%
+    select(-name)  # Exclude the 'name' column
+  
+  # Convert the filtered data into an h2o frame
+  h2o_data <- as.h2o(filtered_data)
+  
+  # Split the h2o frame into training (80%) and testing (20%) sets
+  splits <- h2o.splitFrame(data = h2o_data, ratios = 0.8, seed = 256)
+  train_data_h2o <- splits[[1]]  # Training data (80%)
+  test_data_h2o <- splits[[2]]   # Testing data (20%)
+  
+  # Train the model using h2o AutoML
+  automl_model <- h2o.automl(
+    x = predictors,
+    y = response_variable,
+    training_frame = train_data_h2o,
+    nfolds = 5,
+    max_runtime_secs = 300,  # Adjust this as needed
+    seed = 256
+  )
+  
+  # Get the best model
+  best_model <- h2o.get_best_model(automl_model,algorithm= c( "drf", "gbm",
+                                                              "glm", "xgboost"))
+  
+  # Evaluate the best model on the test data
+  performance <- h2o.performance(best_model, newdata = test_data_h2o)
+  
+  # Store the data, models, and performance for the current subset
+  results[[specific_name]] <- list(
+    TrainingData = train_data_h2o,
+    TestData = test_data_h2o,
+    AutoMLModel = automl_model,
+    BestModel = best_model,
+    Performance = performance
+  )
+}
+```
+
+### Extracting and Plotting Performance Metrics for Multiple Data sets
+
+```{r}
+# Load necessary libraries
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+
+# Initialize an empty dataframe to store performance metrics
+performance_data <- data.frame(Dataset = character(), RMSE = numeric(), 
+                               MSE = numeric(), MAE = numeric(), 
+                               R2 = numeric(), stringsAsFactors = FALSE)
+
+# Loop through the results list and extract performance metrics directly
+# from results$Performance
+for (dataset_name in names(results)) {
+  
+  # Extract performance metrics directly from the results list
+  performance <- results[[dataset_name]]$Performance
+  
+  # Extract individual performance metrics (RMSE, MSE, MAE, R2) from 
+  # already computed data
+  rmse_value <- h2o.rmse(performance)
+  mse_value <- h2o.mse(performance)
+  mae_value <- h2o.mae(performance)
+  r2_value <- h2o.r2(performance)
+  
+  # Append the extracted metrics to the performance dataframe
+  performance_data <- rbind(performance_data, data.frame(
+    Dataset = dataset_name,
+    RMSE = rmse_value,
+    MSE = mse_value,
+    MAE = mae_value,
+    R2 = r2_value
+  ))
+}
+
+# Reshape the data to long format for easier plotting with ggplot
+performance_data_long <- performance_data %>%
+  gather(key = "Metric", value = "Value", -Dataset) %>% 
+  filter(!(Metric == "R2" & Dataset == "Diana")) 
+
+ggplot(performance_data_long, aes(x = Value)) +
+  geom_histogram(bins = 10, color = "black", fill = "skyblue") +
+  facet_wrap(~ Metric, scales = "free") +
+  labs(title = "Distribution of Performance Metrics", 
+       x = "Value", y = "Frequency") +
+  theme_minimal()
+```
+
+### Explanatory variables
+
+```{r}
+# Initialize an empty dataframe to store variable positions for plotting
+variable_positions <- data.frame(Variable = character(), Position = integer(), 
+                                 stringsAsFactors = FALSE)
+
+# Loop through each student and collect variable positions
+for (student_name in names(top_variables)) {
+  
+  # Get the top 5 variables for the student
+  top_vars <- top_variables[[student_name]]
+  
+  # Ensure we only process students with valid top 5 variables
+  if (is.null(top_vars) || length(top_vars) == 0) next
+  
+  # Assign position 1 to 5 to each variable and store in dataframe
+  for (i in seq_along(top_vars)) {
+    variable_positions <- rbind(variable_positions, 
+                                data.frame(Variable = top_vars[i], Position = i))
+  }
+}
+
+# Count the total frequency of each variable and arrange them in descending order
+variable_positions <- variable_positions %>%
+  group_by(Variable) %>%
+  mutate(Frequency = n()) %>%
+  ungroup() %>%
+  arrange(desc(Frequency))
+
+# Set up a color palette using RColorBrewer
+my_colors <- brewer.pal(10, "Set3")  # Choose a color palette with 5 colors
+
+# Plot the frequency of variables in each position, arranged by overall frequency
+ggplot(variable_positions, 
+       aes(x = reorder(Variable, -Frequency), fill = as.factor(Position))) +
+  geom_bar(position = "stack", color = "black") +
+  scale_fill_manual(values = my_colors) +  # Apply the selected color palette
+  labs(x = "Variable", 
+       y = "Frequency", 
+       fill = "Position") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) # Rotate x-axis labels 
+```

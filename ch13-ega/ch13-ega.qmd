@@ -1,0 +1,307 @@
+---
+title: "The Advanced Applications of Psychological Networks with Exploratory Graph Analysis"
+author: 
+   - name: "Tarid Wongvorachan"
+     affil-id: 1,*
+   - name: "Okan Bulut"
+     affil-id: 1
+affiliations:
+  - id: 1
+    name: "University of Alberta"
+  - id: "*"
+    name: "Corresponding author: Tarid Wongvorachan, `wongvora@ualberta.ca`"
+---
+
+
+```{r}
+#install.packages(c("EGAnet", "haven", "lavaan"))
+library(EGAnet)
+library(haven)
+library(lavaan)
+
+df <- read_sav(url("https://github.com/lamethods/data2/raw/refs/heads/main/anxiety/STARS.sav"))
+```
+
+```{r}
+#--------------EGA-----------------
+#We will be using student response data to statistical anxiety scale (SAS)
+#https://doi.org/10.1177/0734282911404985
+
+df_sas <- df[,56:79]
+
+sas_ega <- EGAnet::EGA(
+  data = df_sas, 
+  algorithm = "louvain", 
+  model = "glasso",
+  corr = "auto",
+  consensus.iter = 1000,
+  consensus.method = c("highest_modularity"),
+  plot.EGA = TRUE,
+  seed = 1234
+)
+
+sas_ega
+```
+
+```{r}
+sas_BOOTega <- EGAnet::bootEGA(
+  # we could also provide the cor matrix but then
+  # n (i.e., number of rows) must also be specified
+  data = df_sas, 
+  cor = "cor_auto",
+  uni.method = "louvain",
+  iter = 600, # Number of replica samples to generate
+  # resampling" for n random subsamples of the original data
+  # parametric" for n synthetic samples from multivariate normal dist.
+  type = "parametric", 
+  # EGA Uses standard exploratory graph analysis
+  # EGA.fit Uses total entropy fit index (tefi) to determine best fit of EGA
+  # hierEGA Uses hierarchical exploratory graph analysis
+  EGA.type = "EGA", 
+  model = "glasso", 
+  algorithm = "walktrap", # or "louvain" (better for unidimensional structures)
+  # use "highest_modularity", "most_common", or "lowest_tefi"
+  consensus.method = "highest_modularity", 
+  typicalStructure = TRUE, # typical network of partial correlations
+  plot.typicalStructure = TRUE, # returns a plot of the typical network
+  ncores = 7,
+  progress = TRUE ,
+  summary.table	= TRUE,
+  seed = 1234
+)
+
+summary(sas_BOOTega)
+```
+
+```{r}
+dim_stability_sas <- EGAnet::dimensionStability(sas_BOOTega)
+dim_stability_sas
+# dim_stability_sas$dimension.stability
+# dim_stability_sas$item.stability
+
+#The fit indices suggested Model 1 to be the best fit of the data compared to competing models. 
+
+sas_ega_cfa <- EGAnet::CFA(ega.obj = sas_ega, estimator = "WLSMV",
+                            plot.CFA = TRUE,
+                            data = df_sas)
+
+sas_ega_cfa
+lavaan::fitMeasures(sas_ega_cfa$fit, fit.measures = c("chisq", "df", "pvalue", "cfi", "tli", "rmsea", "srmr"))
+
+semPlot::semPaths(sas_ega_cfa$fit, title = FALSE, 
+                  label.cex = 0.8, sizeLat = 8, sizeMan = 5, 
+                  edge.label.cex = 0.6, minimum = 0.1,
+                  sizeInt = 0.8, mar = c(1, 1, 1, 1), residuals = FALSE, 
+                  intercepts = FALSE, thresholds = FALSE, layout = "spring",
+                  "std", cut = 0.5)
+```
+
+```{r}
+#--------------HierEGA-----------------
+
+
+# df_spot <- readxl::read_excel("SPOT.xlsx", col_names = TRUE)
+# df_spot <- df_spot[,-c(19:21)]
+# library(synthpop)
+# 
+# synth.obj <- syn(df_spot, method = "polr", #Generates a synthetic categorical variable using ordered polytomous regression
+#                   rules = NULL, rvalues = NULL,
+#                   seed = 1234, m = 1)
+# 
+# 
+# spot_synth <- synth.obj$syn
+
+spot_Hierega <- EGAnet::hierEGA(
+  data = spot_synth, 
+  algorithm = "louvain", 
+  model = "glasso",
+  corr = "auto",
+  consensus.iter = 1000,
+  consensus.method = c("highest_modularity"),
+  plot.EGA = TRUE,
+  seed = 1234
+)
+
+spot_Hierega$plot.hierEGA
+```
+
+```{r}
+spot_BOOTega <- EGAnet::bootEGA(
+  # we could also provide the cor matrix but then
+  # n (i.e., number of rows) must also be specified
+  data = spot_synth, 
+  cor = "cor_auto",
+  uni.method = "louvain",
+  iter = 600, # Number of replica samples to generate
+  # resampling" for n random subsamples of the original data
+  # parametric" for n synthetic samples from multivariate normal dist.
+  type = "parametric", 
+  # EGA Uses standard exploratory graph analysis
+  # EGA.fit Uses total entropy fit index (tefi) to determine best fit of EGA
+  # hierEGA Uses hierarchical exploratory graph analysis
+  EGA.type = "hierEGA", 
+  model = "glasso", 
+  algorithm = "walktrap", # or "louvain" (better for unidimensional structures)
+  # use "highest_modularity", "most_common", or "lowest_tefi"
+  consensus.method = "highest_modularity", 
+  typicalStructure = TRUE, # typical network of partial correlations
+  plot.typicalStructure = TRUE, # returns a plot of the typical network
+  ncores = 7,
+  progress = TRUE ,
+  summary.table	= TRUE,
+  seed = 1234
+)
+
+summary(spot_BOOTega)
+```
+
+```{r}
+dim_stability_spot <- EGAnet::dimensionStability(spot_BOOTega)
+dim_stability_spot
+
+
+spot_ega_cfa <- EGAnet::CFA(ega.obj = spot_Hierega, estimator = "WLSMV",
+                           plot.CFA = TRUE,
+                           data = spot_synth)
+
+
+lavaan::fitMeasures(spot_ega_cfa$fit, fit.measures = c("chisq", "df", "pvalue", "cfi", "tli", "rmsea", "srmr"))
+
+semPlot::semPaths(spot_ega_cfa$fit, title = FALSE, 
+                  label.cex = 0.8, sizeLat = 8, sizeMan = 5, 
+                  edge.label.cex = 0.6, minimum = 0.1,
+                  sizeInt = 0.8, mar = c(1, 1, 1, 1), residuals = FALSE, 
+                  intercepts = FALSE, thresholds = FALSE, layout = "spring",
+                  "std", cut = 0.5)
+```
+
+```{r}
+#--------------UVA-----------------
+
+df_stars <- df[,5:55]
+#https://www.ncbi.nlm.nih.gov/pmc/articles/PMC5851613/#pone.0194195.ref014
+
+names(df_stars)
+
+#Determine Redundancies
+
+stars_uva <- EGAnet::UVA(
+  data = df_stars,
+  reduce.method = "remove")
+
+stars_uva
+```
+
+```{r}
+#Examine which variables were kept and which one were removed
+stars_uva$keep_remove
+
+head(stars_uva$reduced_data, 3)
+
+#Perform EGA wiith the original STARS dataset
+stars_ega <- EGA(data = df_stars)
+stars_ega_cfa <- EGAnet::CFA(ega.obj = stars_ega, estimator = "WLSMV",
+                            plot.CFA = FALSE,
+                            data = df_stars)
+stars_fitMeasure <- lavaan::fitMeasures(stars_ega_cfa$fit, fit.measures = c("chisq", "df", "pvalue", "cfi", "tli", "rmsea", "srmr"))
+
+#Perform EGA wiith the reduced STARS dataset
+stars_reduced_ega <- EGA(data = stars_uva$reduced_data)
+stars_reduced_ega_cfa <- EGAnet::CFA(ega.obj = stars_reduced_ega, estimator = "WLSMV",
+                            plot.CFA = FALSE,
+                            data = stars_uva$reduced_data)
+
+stars_uva_fitMeasure <- lavaan::fitMeasures(stars_reduced_ega_cfa$fit, fit.measures = c("chisq", "df", "pvalue", "cfi", "tli", "rmsea", "srmr"))
+
+
+#compare fit
+stars_fitMeasure
+stars_uva_fitMeasure
+
+#The reduced dataset improves the model fit, evidenced by lower RMSEA, SRMR, and higher CFI and TLI
+```
+
+```{r}
+#--------------Dynamical EGA-----------------
+
+data("sim.dynEGA")
+str(sim.dynEGA)
+
+# Define the new column abbreviations
+new_column_names <- c(
+  "TOT",  # Time on Task
+  "QS",   # Quiz Scores
+  "AS",   # Assignment Scores
+  "CP",   # Class Participation
+  "AT",   # Attendance
+  "DC",   # Discussion Contributions
+  "RCS",  # Reading Comprehension Scores
+  "HCR",  # Homework Completion Rate
+  "PS",   # Project Scores
+  "LP",   # Lab Performance
+  "ES",   # Exam Scores
+  "PRS",  # Peer Review Scores
+  "SAS",  # Self-Assessment Scores
+  "ILM",  # Interaction with Learning Materials
+  "ULR",  # Use of Learning Resources
+  "HSB",  # Help-Seeking Behavior
+  "ML",   # Motivation Levels
+  "EGW",  # Engagement in Group Work
+  "RSR",  # Reflection and Self-Regulation
+  "KA",   # Knowledge Application
+  "SD",   # Skill Development
+  "FU",   # Feedback Utilization
+  "CS",   # Communication Skills
+  "CPS",   # Creativity in Problem Solving
+  "ID", #ID
+  "Group" #Group
+)
+
+names(sim.dynEGA) <- new_column_names
+names(sim.dynEGA)
+
+simulated_all <- dynEGA(
+  data = sim.dynEGA,
+  level = c("individual", "group", "population"),
+  ncores = 6, # use more for quicker results
+  verbose = TRUE, # progress bar
+  corr = "pearson",
+  algorithm = "louvain",
+  id = "ID",
+  group = "Group"
+)
+
+print(simulated_all)
+```
+
+```{r}
+# Plot population
+simulated_all$dynEGA$population
+plot(simulated_all$dynEGA$population)
+
+# Plot groups
+simulated_all$dynEGA$group$"1"
+simulated_all$dynEGA$group$"2"
+plot(simulated_all$dynEGA$group)
+
+#Individual whose network has two communities
+simulated_all$dynEGA$individual$"1"
+plot(simulated_all$dynEGA$individual, id = 1)
+
+#Individual whose network has three communities
+simulated_all$dynEGA$individual$"75"
+plot(simulated_all$dynEGA$individual, id = 75)
+```
+
+```{r}
+#-------------SAVE R Object---------------
+
+save(df, df_sas, sas_ega, sas_BOOTega, sas_ega_cfa,
+     spot_synth, spot_Hierega, spot_BOOTega, spot_ega_cfa,
+     df_stars, stars_uva, 
+     stars_ega, stars_ega_cfa, stars_fitMeasure,
+     stars_reduced_ega, stars_reduced_ega_cfa, stars_uva_fitMeasure,
+     sim.dynEGA, simulated_all,
+     file = "LAMethod_EGA.RData")
+```
+

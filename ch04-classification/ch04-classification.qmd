@@ -1,0 +1,540 @@
+---
+title: "Artificial Intelligence: Using Machine Learning to Classify Students and Predict Low Achievers"
+execute:
+  message: FALSE
+author: 
+   - name: "Mohammed Saqr"
+     email: "mohammed.saqr@uef.fi"
+     affil-id: 1,*
+   - name: "Kamila Misiejuk"
+     email: "kamila.misiejuk@fernuni-hagen.de"
+     affil-id: 2     
+   - name: "Santtu Tikka"
+     email: "sonsoles.lopez@uef.fi"
+     affil-id: 3
+   - name: "Sonsoles López-Pernas"
+     email: "sonsoles.lopez@uef.fi"
+     affil-id: 1
+affiliations:
+  - id: 1
+    name: "University of Eastern Finland"
+  - id: 2
+    name: "FernUniversität in Hagen"
+  - id: 3
+    name: "University of Jyväskylä"
+  - id: "*"
+    name: "Corresponding author: Mohammed Saqr, `mohammed.saqr@uef.fi`"
+---
+
+# Classifying students with R
+
+## Tutorial 1: A traditional classification approach with Random Forest
+
+```{r}
+# Load necessary libraries 
+library(randomForest)  # For Random Forest model
+library(tidyverse)     # For data manipulation and visualization
+library(rsample)    # For data splitting and modeling workflow
+library(caret)      # For model evaluation
+library(pROC) # For visualizing receiver operating characteristic (ROC curves) 
+library(rio)  # For importing data files 
+
+# Set seed for reproducibility
+set.seed(1410)
+```
+
+### Preparing the data
+
+
+```{r}
+# Step 1: Load and prepare the data
+raw_data <- import("https://github.com/lamethods/data2/raw/main/lms/lms.csv")
+
+# Create a binary classification target variable
+median_grade <- median(raw_data$Final_Grade)
+student_data <- raw_data |>
+  mutate(Achievement = factor(ifelse(Final_Grade > median_grade, 
+                                     "High_Achievers", "Low_Achievers"), 
+                              levels = c("Low_Achievers", "High_Achievers")))
+```
+
+### Splitting the data into training and testing sets
+
+
+```{r}
+# Step 2: Split the data into training and testing sets
+data_split <- initial_split(student_data, prop = 0.8, strata = "Achievement")
+train_data <- training(data_split)
+test_data <- testing(data_split)
+```
+
+### Creating and training the model
+
+```{r}
+# Step 3: Create and fit a Random Forest model
+rf_model <- randomForest(
+  Achievement ~ Freq_Course_View + Freq_Lecture_View + Freq_Forum_Consume +
+    Freq_Forum_Contribute + Regularity_Course_View + 
+    Regularity_Lecture_View + Regularity_Forum_Consume +
+    Regularity_Forum_Contribute + Session_Count + 
+    Total_Duration + Active_Days,
+  data = train_data, 
+  ntree = 1000,
+  importance = TRUE)
+```
+
+### Evaluating the model
+
+```{r}
+# Step 4: Make predictions on the test set for the probabilities and the classes
+predictions_prob <- predict(rf_model, test_data, type = "prob")
+predictions_class <- predict(rf_model, test_data)
+
+# Add predictions and probabilities to the test dataset
+test_data <- test_data |>
+  mutate(Predicted_Class = predictions_class,
+         Probability_Low_Achievers = predictions_prob[, "Low_Achievers"],
+         Probability_High_Achievers = predictions_prob[, "High_Achievers"])
+```
+
+#### Evaluation metrics
+
+```{r}
+# Step 5: Evaluate the model
+# Create confusion matrix
+confusion_matrix <- confusionMatrix(test_data$Predicted_Class, test_data$Achievement)
+
+# Print confusion matrix and other metrics
+print(confusion_matrix)
+```
+
+#### Visual evaluation
+
+```{r}
+#| label: fig-fourfoldplot
+#| fig-cap: "Confusion matrix"
+
+library(caret)
+# Step 6: Visualize results
+fourfoldplot(confusion_matrix$table)
+roc_obj <- roc(test_data$Achievement, predictions_prob[, "Low_Achievers"])
+```
+
+
+```{r, fig.width= 5, fig.height=5, out.width="60%"}
+# Plot ROC curve
+plot(roc_obj, asp = NA)
+auc_value <- auc(roc_obj)
+print(paste("AUC:", auc_value))
+```
+
+#### Explainability
+
+```{r}
+# Extract variable importance from the fitted model
+importance_values <- rf_model$importance
+
+# Convert to a data frame for plotting
+importance_df <- as.data.frame(importance_values)
+importance_df$Variable <- rownames(importance_df)
+```
+
+```{r, layout= c(1,1)}
+# Plot variable importance for MeanDecreaseAccuracy
+ggplot(importance_df, aes(x = reorder(Variable, MeanDecreaseAccuracy), 
+                          y = MeanDecreaseAccuracy)) +
+  geom_bar(stat = "identity", fill = "turquoise") +
+  coord_flip() +
+  labs(x = "Variable",
+       y = "Importance") +
+  theme_minimal()
+
+# Plot variable importance for MeanDecreaseGini
+ggplot(importance_df, aes(x = reorder(Variable, MeanDecreaseGini), 
+                          y = MeanDecreaseGini)) +
+  geom_bar(stat = "identity", fill = "turquoise") +
+  coord_flip() +
+  labs(x = "Variable",
+       y = "Importance") +
+  theme_minimal()
+```
+
+## Tutorial 2: An alternative implementation of random forests with `tidymodels`
+
+### Preparing the data
+
+```{r}
+library(tidymodels)
+
+# Set seed for reproducibility
+set.seed(1410)
+
+# Load and prepare the data
+# Assuming student_data is already loaded into the environment
+student_data <- raw_data |>
+  mutate(Achievement = factor(ifelse(Final_Grade > median(Final_Grade), 
+                                     "High_Achievers", "Low_Achievers"),
+                              levels = c("Low_Achievers", "High_Achievers")))
+```
+
+### Splitting the data into training and testing sets
+
+```{r}
+# Step 2: Split the data into training and testing sets
+data_split <- initial_split(student_data, prop = 0.8, strata = Achievement)
+train_data <- training(data_split)
+test_data <- testing(data_split)
+```
+
+### Creating a recipe
+
+```{r}
+# Create a recipe
+rf_recipe <- recipe(Achievement ~ Freq_Course_View + Freq_Lecture_View + 
+                    Freq_Forum_Consume + Freq_Forum_Contribute + 
+                    Regularity_Course_View + Regularity_Lecture_View + 
+                    Regularity_Forum_Consume + Regularity_Forum_Contribute + 
+                    Session_Count + Total_Duration + Active_Days,
+                    data = train_data) |>
+  step_normalize(all_predictors())
+```
+
+### Creating the model
+
+```{r}
+# Create a random forest model specification
+rf_spec <- rand_forest(trees = 1000, mtry = 5) |>
+  set_engine("ranger",  importance = "impurity") |>
+  set_mode("classification")
+```
+
+### Creating a workflow
+
+```{r}
+# Create a workflow
+rf_workflow <- workflow() |>
+  add_recipe(rf_recipe) |>
+  add_model(rf_spec)
+
+# Fit the model
+rf_fit_tidy <- rf_workflow |>
+  fit(data = train_data)
+
+# Make predictions on the test set
+predictions_prob_tidy <- predict(rf_fit_tidy, test_data, type = "prob")
+predictions_class_tidy <- predict(rf_fit_tidy, test_data)
+
+# Add predictions and probabilities to the test dataset
+test_data <- test_data |>
+  mutate(
+    Predicted_Class_tidy = predictions_class_tidy$.pred_class,
+    Probability_Low_Achievers_tidy = predictions_prob_tidy$.pred_Low_Achievers,
+    Probability_High_Achievers_tidy = predictions_prob_tidy$.pred_High_Achievers)
+```
+
+### Evaluating the model
+
+```{r}
+# Confusion Matrix
+conf_mat_tidy <- conf_mat(test_data, truth = Achievement, 
+                          estimate = Predicted_Class_tidy)
+print(conf_mat_tidy)
+
+# Custom metric set
+custom_metrics_tidy <- metric_set(accuracy, sens, yardstick::spec, 
+                                  f_meas, bal_accuracy, ppv, npv)
+
+# Compute all metrics
+detailed_metrics_tidy <- test_data |>
+  custom_metrics_tidy(
+    truth = Achievement, 
+    estimate = Predicted_Class_tidy,
+    event_level = "first")
+
+print(detailed_metrics_tidy)
+```
+
+
+```{r}
+#| label: fig-roc-auc
+#| fig-cap: "ROC Curve for Random Forest Model"
+
+# Compute ROC and AUC using yardstick
+roc_data_tidy <- test_data |>
+  roc_curve(truth = Achievement, Probability_Low_Achievers_tidy)
+
+auc_value_tidy <- test_data |>
+  roc_auc(Achievement, Probability_Low_Achievers_tidy) |>
+  pull(.estimate)
+
+# Plot ROC Curve using ggplot2
+ggplot(roc_data_tidy, aes(x = 1 - specificity, y = sensitivity)) +
+  geom_line(color = "blue") +
+  geom_abline(linetype = "dashed", color = "red") +
+  labs(x = "False Positive Rate", y = "True Positive Rate") + 
+  annotate("text", x = 0.75, y = 0.25, 
+           label = paste("AUC =", round(auc_value_tidy, 3)), size = 5) + 
+  theme_minimal()
+```
+
+### Explainability
+
+```{r}
+#| label: fig-varimp-tidymodels
+#| fig-cap: "Variable Importance (`tidymodels`)"
+# Extract the ranger model from the workflow
+importance_values <- pull_workflow_fit(rf_fit_tidy)$fit$variable.importance
+
+# Convert to a data frame for plotting
+importance_df <- as.data.frame(importance_values)
+importance_df$Variable <- rownames(importance_df)
+colnames(importance_df) <- c("Importance", "Variable")
+
+# Plot variable importance
+ggplot(importance_df, aes(x = reorder(Variable, Importance), y = Importance)) +
+  geom_bar(stat = "identity", fill = "turquoise") +
+  coord_flip() +
+  labs(x = "Variable", y = "Importance") +
+  theme_minimal() +
+  theme(
+    axis.text.y = element_text(color = "black"),
+    axis.title = element_text(color = "black"),
+    plot.title = element_text(size = 14, face = "bold", color = "black"))
+```
+
+## Tutorial 3: Evaluating multiple models with `tidymodels`
+
+### Preparing the data
+
+
+```{r}
+# Step 1: Load and prepare the data
+# Assuming student_data is already loaded into the environment
+student_data <- raw_data |>
+  mutate(Achievement = factor(ifelse(Final_Grade > median(Final_Grade), 
+                                     "High_Achievers", "Low_Achievers"),
+                              levels = c("Low_Achievers", "High_Achievers")))
+```
+
+### Splitting the data into training and testing sets
+
+
+```{r}
+# Step 2: Split the data into training and testing sets
+data_split <- initial_split(student_data, prop = 0.8, strata = Achievement)
+train_data <- training(data_split)
+test_data <- testing(data_split)
+```
+
+### Creating a recipe
+
+
+```{r}
+model_recipe <- recipe(Achievement ~ Freq_Course_View + Freq_Lecture_View + 
+                       Freq_Forum_Consume + Freq_Forum_Contribute + 
+                       Regularity_Course_View + Regularity_Lecture_View + 
+                       Regularity_Forum_Consume + Regularity_Forum_Contribute + 
+                       Session_Count + Total_Duration + Active_Days,
+                       data = train_data) |>
+  step_normalize(all_predictors())
+```
+
+### Create all model specifications
+
+```{r}
+library(tidymodels) # laod the tidymodels framework and its packages
+# Load the required packages for each algorithm
+# Random Forest
+library(ranger) # Engine: ranger, known for its speed and performance
+library(randomForest) # Engine: randomForest, the original R implementation
+# XGBoost (eXtreme Gradient Boosting)
+library(xgboost) # Engine: xgboost, gradient boosting framework
+# Support Vector Machines (SVM)
+library(kernlab) # Engine: kernlab, a powerful classification algorithm
+# Logistic Regression
+# Base R includes glm, no additional package needed
+# K-Nearest Neighbors (KNN)
+library(kknn)  # Engine: kknn, a simple, non-parametric classification algorithm
+# Neural Networks
+library(nnet) # Engine: nnet, inspired by the human brain for complex patterns
+# Decision Trees
+library(rpart) # Engine: rpart, recursive partitioning for classification trees
+# Naive Bayes
+library(discrim) # Engine: naivebayes, based on Bayes' theorem
+# Linear Discriminant Analysis (LDA)
+library(MASS)  # Engine: MASS, classification via linear combinations of features
+# Bagged Trees
+# Uses the same package as Decision Trees: rpart
+# Multivariate Adaptive Regression Splines (MARS)
+library(earth) # Engine: earth, non-linear regression with piecewise linear fits
+# Bayesian Additive Regression Trees (BART)
+library(dbarts) # Engine: dbarts, Bayesian approach creating a sum-of-trees model
+library(baguette)  # Engine: rpart, an ensemble of decision trees
+library(parsnip) # Interface for `tidymodels`
+
+set_classification <- function(x, engine) {
+  x |> set_engine(engine) |> set_mode("classification")
+}
+
+# Function to specify each model and its engine
+create_model_specs <- function() {
+  list(
+    "Random Forest (ranger)" = rand_forest() |> set_classification("ranger"),
+    "XGBoost" = boost_tree() |> set_classification("xgboost"),
+    "SVM (RBF)" = svm_rbf() |> set_classification("kernlab"),
+    "Logistic Regression" = logistic_reg() |> set_classification("glm"),
+    "K-Nearest Neighbors" = nearest_neighbor() |> set_classification("kknn"),
+    "Neural Network" = mlp() |> set_classification("nnet"),
+    "Decision Tree" = decision_tree() |> set_classification("rpart"),
+    "Naive Bayes" = naive_Bayes() |> set_classification("naivebayes"),
+    "Linear Discriminant Analysis" = discrim_linear() |> set_classification("MASS"),
+    "Bagged Tree" = bag_tree() |> set_classification("rpart"),
+    "Random Forest (randomForest)" = rand_forest() |> set_classification("randomForest"),
+    "MARS" = mars() |> set_classification("earth"),
+    "BART" = parsnip::bart() |> set_classification("dbarts")
+  )
+}
+
+# Create the model specifications
+model_specs <- create_model_specs()
+```
+
+### Creating the workflows and fitting the data
+
+
+```{r}
+create_workflows <-  function(spec) {
+  workflow() |> add_recipe(model_recipe) |> add_model(spec)
+}
+
+model_workflows <- lapply(model_specs, create_workflows)
+
+### Fitting the models
+
+fit_model <- function(workflow) {
+  fit(workflow, data = train_data)
+}
+
+model_fits <- lapply(model_workflows, fit_model)
+```
+
+### Evaluating the models
+
+
+```{r}
+make_predictions <- function(fit) {
+  predict(fit, test_data) |>
+    bind_cols(predict(fit, test_data, type = "prob")) |>
+    bind_cols(test_data)
+}
+
+model_preds <- lapply(model_fits, make_predictions)
+
+evaluate_model <- function(pred, model_name) {
+  # Confusion Matrix
+  conf_mat <- conf_mat(pred, truth = Achievement, estimate = .pred_class)
+  
+  # Other metrics (Class metrics only)
+  metrics <- metric_set(accuracy, sens, yardstick::specificity, 
+                        f_meas, bal_accuracy, ppv, npv)
+  model_performance <- metrics(pred, truth = Achievement, 
+                               estimate = .pred_class)
+  
+  # ROC Curve
+  roc_curve <- roc_curve(pred, truth = Achievement, .pred_Low_Achievers) |>
+    mutate(model = model_name)
+  
+  list(conf_mat = conf_mat, performance = model_performance, roc = roc_curve)
+}
+
+# Evaluate each model and store results
+evaluate_all_models <- function(preds, model_names) {
+  mapply(evaluate_model, preds, model_names, SIMPLIFY = FALSE)
+}
+
+evaluation_results <- evaluate_all_models(model_preds, names(model_preds))
+```
+
+#### Combining and Plotting Results
+
+
+```{r}
+combine_performance_metrics <- function(evaluation_results) {
+  performance_df <- do.call(rbind, lapply(evaluation_results, function(res) {
+    res$performance
+  }))
+  performance_df$model <- rep(names(evaluation_results), 
+                              times = sapply(evaluation_results, function(res) {
+    nrow(res$performance)
+  }))
+  performance_df
+}
+
+performance_df <- combine_performance_metrics(evaluation_results)
+
+combine_roc_curves <- function(evaluation_results) {
+  do.call(rbind, lapply(evaluation_results, function(res) {
+    res$roc
+  }))
+}
+
+roc_df <- combine_roc_curves(evaluation_results)
+
+extract_confusion_matrices <- function(evaluation_results) {
+  lapply(evaluation_results, function(res) {
+    res$conf_mat
+  })
+}
+
+conf_mat_list <- extract_confusion_matrices(evaluation_results)
+```
+
+
+```{r, fig.width=7, fig.height=4}
+palette <- c("darkgreen", "green", "cyan", "blue", "purple", "magenta", "pink",
+             "red", "orange", "yellow", "darkgoldenrod4", "grey", "black" )
+
+performance_df |>
+  dplyr::select(model, .metric, .estimate) |>
+  pivot_longer(cols = .estimate, names_to = "metric", values_to = "value") |>
+  ggplot(aes(y = .metric, x = value, fill = model)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  scale_fill_manual(values = palette, name = "Metric") +
+  theme_minimal() +
+  labs(x = "Value", y = "Model") 
+```
+
+```{r, fig.width=7, fig.height=4}
+ggplot(roc_df, aes(x = 1 - specificity, y = sensitivity, color = model)) +
+  geom_line(size = 0.5) +
+  geom_abline(linetype = "dashed") +
+  scale_color_manual(values = palette, name = "Metric") +
+  theme_minimal() +
+  labs(x = "1 - Specificity", y = "Sensitivity") +
+  theme(legend.position = "right")
+```
+
+
+```{r, fig.width=12, fig.height=12}
+plot_confusion_matrix <- function(conf_mat, model_name) {
+  autoplot(conf_mat, type = "heatmap") +
+    scale_fill_gradient(low = "white", high = "blue") +
+    theme_minimal() +
+    labs(title = paste(model_name), fill = "Count")
+}
+
+library(gridExtra)
+
+# List to store ggplot objects
+plot_list <- list()
+
+# Generate and store each confusion matrix plot
+for (model_name in names(conf_mat_list)) {
+  conf_mat_plot <- plot_confusion_matrix(conf_mat_list[[model_name]], model_name)
+  plot_list[[model_name]] <- conf_mat_plot
+}
+
+# Combine all plots into one grid
+# Adjust ncol based on how many columns you want
+grid.arrange(grobs = plot_list, ncol = 3, nrow = 5) 
+```

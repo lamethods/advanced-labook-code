@@ -1,0 +1,552 @@
+---
+title: "Explainable Artificial Intelligence in Education: A Tutorial for Identifying the Variables that Matter"
+author: 
+   - name: "Mohammed Saqr"
+     email: "mohammed.saqr@uef.fi"
+     affil-id: 1,*
+   - name: "Sonsoles López-Pernas"
+     email: "sonsoles.lopez@uef.fi"
+     affil-id: 1
+affiliations:
+  - id: 1
+    name: "University of Eastern Finland"
+  - id: "*"
+    name: "Corresponding author: Mohammed Saqr, `mohammed.saqr@uef.fi`"
+---
+
+# A tutorial on global xAI explainability using `DALEX`
+
+## `DALEX` for student grade prediction 
+
+
+```{r, setup, message = F}
+set.seed(50)
+# Load necessary libraries
+library(tidyverse)
+library(rsample)
+library(e1071) 
+library(DALEX)
+library(rio)
+
+# Import the data
+student_data <- import("https://github.com/lamethods/data2/raw/main/lms/lms.csv")
+
+# Standardize the numeric columns
+student_data_standardized <- student_data |>
+  mutate(across(where(is.numeric), ~scale(.) |> as.vector()))
+
+# Split the data into training and testing sets
+data_split <- initial_split(student_data_standardized, prop = 0.8)
+train_data <- training(data_split)
+test_data <- testing(data_split)
+
+# Define the formula to specify the relationship between the target variable 
+# and the predictor variables
+formula <- Final_Grade ~ Freq_Course_View + Freq_Lecture_View + 
+  Freq_Forum_Consume + Freq_Forum_Contribute + Regularity_Course_View +
+  Regularity_Lecture_View + Regularity_Forum_Consume + 
+  Regularity_Forum_Contribute + Session_Count + Total_Duration + Active_Days
+
+# Fit the SVM model
+svm_fit <- svm(formula,
+               data = train_data,
+               kernel = "radial")
+```
+
+
+
+```{r , warning=FALSE, message=FALSE}
+set.seed(50)
+
+library(DALEX)
+# Create an explainer with DALEX
+explainer_svm <- explain(
+  svm_fit,
+  data = test_data |> dplyr::select(-Final_Grade),
+  y = test_data$Final_Grade,
+  label = "SVM",
+  verbose = FALSE
+)
+print(explainer_svm)
+```
+
+
+```{r, warning=FALSE, message=FALSE}
+# Alternative code chunk
+set.seed(50)
+
+#Alternative model estimation for SVM
+
+library(tidymodels)
+# Define SVM model specification with a radial basis function kernel
+svm_specification <- svm_rbf() |>
+  set_mode("regression") |>
+  set_engine("kernlab")
+
+# Create the workflow. Combine the model specification with the formula
+svm_workflow <- workflow() |>
+  add_model(svm_specification) |>
+  add_formula(formula)
+
+# Fit the SVM model
+svm_fit_tidy <- svm_workflow |>
+  parsnip::fit(data = train_data)
+
+# Create an explainer with DALEX
+explainer_svm_tidy <- explain(
+  svm_fit_tidy,
+  data = test_data |> dplyr::select(-Final_Grade),
+  y = test_data$Final_Grade,
+  label = "SVM",
+  verbose = FALSE)
+
+# print(explainer_svm_tidy) # Uncomment to see the output
+```
+
+
+### Model evaluation
+
+
+```{r, message=FALSE, warning=FALSE}
+set.seed(50)
+
+# Calculate and print model performance metrics for the SVM model
+model_performance_svm <- model_performance(explainer_svm)
+print(model_performance_svm)
+```
+
+
+```{r, message=FALSE, warning=FALSE, layout = matrix(rep(1,6),ncol = 2,byrow = T)}
+set.seed(50)
+
+# Generate various model performance plots
+plot(model_performance_svm, geom = "lift") 
+plot(model_performance_svm, geom = "gain") 
+plot(model_performance_svm, geom = "boxplot") 
+plot(model_performance_svm, geom = "histogram")
+plot(model_performance_svm, geom = "ecdf")
+```
+
+### Model explainability
+
+```{r, message=FALSE, warning=FALSE,  layout = matrix(rep(1,4) ,ncol = 2,byrow = T)}
+set.seed(50)
+
+# Default model
+vi_svm <- model_parts(explainer_svm)
+plot(vi_svm)
+
+# Same as before with all arguments specified 
+vi_svm <- model_parts(explainer_svm, loss_function = loss_root_mean_square, 
+                      B = 100)
+plot(vi_svm)  
+
+# other variations: difference and ratio 
+vi_svm_difference <- model_parts(explainer_svm, loss_function = loss_root_mean_square, 
+                                 B = 100, type = "difference")
+plot(vi_svm_difference)  
+
+vi_svm_ratio <- model_parts(explainer_svm, loss_function = loss_root_mean_square, 
+                            B = 100, type = "ratio")
+plot(vi_svm_ratio)
+```
+
+#### Creating Custom Loss Functions for DALEX
+
+
+```{r, message=FALSE, warning=FALSE, layout = c(1,1)}
+set.seed(50)
+
+# Load necessary libraries
+library(DALEX)
+library(ggplot2)
+
+# Define the custom MAE loss function
+loss_mae <- function(observed, predicted) {
+  # Compute the Mean Absolute Error
+  mean(abs(observed - predicted))
+}
+
+# Define the custom MAD loss function
+loss_mad <- function(observed, predicted) {
+  # Compute the Median Absolute Deviation
+  median(abs(observed - predicted))
+  #mean(abs(predicted - median(predicted))) another version
+}
+
+# Compute variable importance using the custom MAE loss function
+vi_svm_mae <- model_parts(explainer_svm, loss_function = loss_mae)
+
+# Compute variable importance using the custom MAD loss function
+vi_svm_mad <- model_parts(explainer_svm, loss_function = loss_mad)
+
+# Plot the results for MAE
+plot(vi_svm_mae) 
+
+# Plot the results for MAD
+plot(vi_svm_mad)
+```
+
+### Model selection: creating and evaluating several ML models
+
+
+```{r, message=FALSE, warning=FALSE}
+set.seed(50)
+
+# Load necessary packages
+library(tidyverse)
+library(caret)
+library(rpart)
+library(randomForest)
+library(e1071)
+library(kknn)
+library(gbm)
+library(xgboost)
+library(DALEX)
+
+# Linear Regression
+linear_model <- lm(formula, data = train_data)
+
+# Decision Tree
+decision_tree_model <- rpart(formula, data = train_data, method = "anova")
+
+# Random Forest
+random_forest_model <- randomForest(formula, data = train_data, ntree = 100)
+
+# Support Vector Machine
+svm_model <- svm(formula, data = train_data)
+
+# k-Nearest Neighbors
+knn_model <- train(formula, data = train_data, method = "kknn", tuneLength = 5)
+
+# Gradient Boosting Machine
+gbm_model <- gbm(formula, data = train_data, distribution = "gaussian", 
+                 n.trees = 100, interaction.depth = 3, shrinkage = 0.1, cv.folds = 5)
+
+# XGBoost
+train_matrix <- model.matrix(formula, data = train_data)[,c(-1)]
+test_matrix <- model.matrix(formula, data = test_data)[,c(-1)]
+
+train_label <- train_data$Final_Grade
+xgboost_model <- xgboost(data = train_matrix, label = train_label, nrounds = 100, 
+                         objective = "reg:squarederror", verbose = 0)
+```
+
+### Multiple models
+#### Creating multiple explainers
+
+
+```{r, message=FALSE, warning=FALSE}
+set.seed(50)
+
+# Create `DALEX`explainers
+explainer_linear <- explain(
+  model = linear_model, y = test_data$Final_Grade,
+  data = dplyr::select(test_data, -Final_Grade),
+  label = "Linear Regression", verbose = FALSE
+)
+
+explainer_decision_tree <- explain(
+  model = decision_tree_model, y = test_data$Final_Grade,
+  data = dplyr::select(test_data, -Final_Grade),
+  label = "Decision Tree", verbose = FALSE
+)
+
+explainer_random_forest <- explain(
+  model = random_forest_model, y = test_data$Final_Grade,
+  data = dplyr::select(test_data, -Final_Grade),
+  label = "Random Forest", verbose = FALSE
+)
+
+explainer_svm <- explain(
+  model = svm_model, y = test_data$Final_Grade,
+  data = dplyr::select(test_data, -Final_Grade),
+  label = "SVM", verbose = FALSE
+)
+
+explainer_knn <- explain(
+  model = knn_model$finalModel, y = test_data$Final_Grade,
+  data = dplyr::select(test_data, -Final_Grade),
+  label = "k-NN", verbose = FALSE
+)
+
+explainer_gbm <- explain(
+  model = gbm_model, y = test_data$Final_Grade,
+  data = dplyr::select(test_data, -Final_Grade),
+  label = "GBM", verbose = FALSE
+)
+
+explainer_xgboost <- explain(
+  model = xgboost_model, y = test_data$Final_Grade,
+  data = test_matrix, label = "XGBoost", verbose = FALSE
+)
+
+```
+
+#### Evaluation of multiple models
+
+
+```{r, message=FALSE, warning=FALSE, results = FALSE}
+set.seed(50)
+
+# Calculate performance metrics for each model
+performance_linear <- model_performance(explainer_linear)
+performance_decision_tree <- model_performance(explainer_decision_tree)
+performance_random_forest <- model_performance(explainer_random_forest)
+performance_svm <- model_performance(explainer_svm)
+performance_knn <- model_performance(explainer_knn)
+performance_gbm <- model_performance(explainer_gbm)
+performance_xgboost <- model_performance(explainer_xgboost)
+
+# Combine performance metrics into a single table
+performance_metrics <- rbind(
+  `Linear Regression` = as.array(performance_linear$measure),
+  `Decision Tree` = performance_decision_tree$measures, 
+  `Random Forest` = performance_random_forest$measures,
+  `SVM` = performance_svm$measures$r2, 
+  `KNN` = performance_knn$measures,
+  `GBM` = performance_gbm$measures,
+  `XGBoost` = performance_xgboost$measures)  
+
+# Print the combined dataframe
+print(performance_metrics)
+```
+
+
+
+```{r, echo = FALSE}
+plot.model_performance_histogram = function (df, nlabels) 
+{
+    diff <- label <- NULL
+    ggplot(df, aes(diff, fill = label)) + geom_histogram(bins = 100) + 
+        facet_wrap(~label, ncol = 2) + theme_default_dalex() + 
+        xlab("residuals") + theme(legend.position = "none") + 
+        scale_fill_manual(name = "Model", values = colors_discrete_drwhy(nlabels)) + 
+        ggtitle("Histogram for residuals")
+}
+
+rlang::env_unlock(env = asNamespace('DALEX'))
+rlang::env_binding_unlock(env = asNamespace('DALEX'))
+assign('plot.model_performance_histogram', plot.model_performance_histogram, envir = asNamespace('DALEX'))
+rlang::env_binding_lock(env = asNamespace('DALEX'))
+rlang::env_lock(asNamespace('DALEX'))
+```
+
+```{r, message=FALSE, warning=FALSE, layout = matrix(c(rep(1,4),2,0),ncol = 2,byrow = T), fig.width=8, fig.height=5.4}
+set.seed(50)
+
+# Create combined plots
+# Lift plot
+plot(performance_linear, performance_decision_tree, performance_random_forest,
+     performance_svm, performance_knn, performance_gbm, performance_xgboost,
+    geom = "lift") 
+
+# Gain plot
+plot(performance_linear, performance_decision_tree, performance_random_forest,
+     performance_svm, performance_knn, performance_gbm, performance_xgboost,
+     geom = "gain") 
+
+# Residuals plot
+plot(performance_linear, performance_decision_tree, performance_random_forest,
+     performance_svm, performance_knn, performance_gbm, performance_xgboost,
+     geom = "boxplot"
+)
+
+# ecdf curve
+plot(performance_linear, performance_decision_tree, performance_random_forest,
+     performance_svm, performance_knn, performance_gbm, performance_xgboost,
+     geom = "ecdf"
+)
+
+# histogram 
+plot(performance_linear, performance_decision_tree, performance_random_forest,
+     performance_svm, performance_knn, performance_gbm, performance_xgboost,
+     geom = "histogram" 
+) 
+```
+
+
+#### Explaining the XGBoost model
+
+
+```{r, message=FALSE, warning=FALSE, layout = c(1,1,1)}
+#| label: fig-xgboost-maemad
+#| fig-cap: "XGBoost Variable importance using custom loss function"
+#| fig-subcap: 
+#|  - "RMSE"
+#|  - "MAD"
+#|  - "MAE"
+set.seed(50)
+
+# Compute and plot variable importance using the custom RMSE loss function
+vi_xgboost <- model_parts(explainer_xgboost, loss_function = loss_root_mean_square,
+                          B=500, type = "ratio")
+plot(vi_xgboost)  
+
+# Compute and plot variable importance using the custom MAD loss function
+vi_xgboost_mad <- model_parts(explainer_xgboost, loss_function = loss_mad,  B=500)
+plot(vi_xgboost_mad)
+
+# Compute and plot variable importance using the custom MAE loss function
+vi_xgboost_mae <- model_parts(explainer_xgboost, loss_function = loss_mae,B=500)
+plot(vi_xgboost_mae) 
+```
+
+### Partial-dependence Profiles
+
+
+#### Partial Dependence Plots (PDPs)
+
+
+#### Accumulated Local Effects (ALE) Plots
+
+
+```{r fig.width=8, fig.height=7, message=FALSE, warning=FALSE, layout = c(1,1)}
+# Partial Dependence Plots
+pdp_xgboost <- model_profile(explainer_xgboost, 
+                variables = colnames(test_data)[colnames(test_data) != "Final_Grade"])
+plot(pdp_xgboost) + labs(subtitle = "")
+
+# Accumulated Local Effects (ALE) Plots
+ale_xgboost <- model_profile(explainer_xgboost, type = "accumulated", 
+                variables = colnames(test_data)[colnames(test_data) != "Final_Grade"])
+plot(ale_xgboost) + labs(subtitle = "")
+```
+
+
+```{r fig.width=12, fig.height=6, message=FALSE, warning=FALSE}
+# Accumulated Local Effects (ALE) Plots
+ale_xgboost <- model_profile(explainer_xgboost, type = "accumulated", 
+                variables = colnames(test_data)[colnames(test_data) != "Final_Grade"], 
+                k = 3)
+plot(ale_xgboost) + labs(subtitle = "")
+```
+
+## Explaining a classification model
+
+
+```{r, message=FALSE, warning=FALSE}
+# Load necessary libraries
+library(gbm)
+library(rio)
+library(dplyr)
+library(caret)
+library(DALEX)
+library(rsample)
+
+# Set seed for reproducibility
+set.seed(50)
+
+# Load data
+student_data <- import("https://github.com/lamethods/data2/raw/main/lms/lms.csv")
+
+# Create binary classification target variable
+student_data <- student_data |>
+  mutate(Achievement = ifelse(Final_Grade > median(Final_Grade), 
+                              "High_Achievers", "Low_Achievers")) |>
+  mutate(Achievement = factor(Achievement, 
+                              levels = c("High_Achievers", "Low_Achievers")))
+
+# Convert target to numeric for model fitting
+student_data$Achievement_numeric <- as.numeric(student_data$Achievement) - 1
+
+# Split data into training and testing sets
+data_split <- initial_split(student_data, prop = 0.8, strata = Achievement_numeric)
+train_data <- training(data_split)
+test_data <- testing(data_split)
+
+# Fit GBM model
+gbm_model <- gbm(
+  Achievement_numeric ~  Freq_Course_View + Freq_Lecture_View + Freq_Forum_Consume + 
+    Freq_Forum_Contribute + Regularity_Course_View + Regularity_Lecture_View + 
+    Regularity_Forum_Consume + Regularity_Forum_Contribute +
+    Session_Count + Total_Duration + Active_Days,
+  data = train_data,
+  distribution = "bernoulli",  # For binary classification
+  n.trees = 1000,
+  interaction.depth = 3,
+  shrinkage = 0.01,
+  bag.fraction = 0.7
+)
+```
+
+
+```{r, message=FALSE, warning=FALSE}
+# Create `DALEX` explainer
+explainer_gbm <- explain(
+  model = gbm_model,
+  data = test_data[, 1:11],
+  y = test_data$Achievement_numeric,
+  label = "GBM Model"
+)
+
+# Model performance
+model_performance_gbm <- model_performance(explainer_gbm)
+print(model_performance_gbm)
+```
+
+
+```{r, message=FALSE, warning=FALSE, fig.width=5, fig.height=3, layout = matrix(rep(1,8), byrow = T, ncol = 2)}
+# Create individual plots
+plot(model_performance_gbm, geom = "roc")
+plot(model_performance_gbm, geom = "boxplot")
+plot(model_performance_gbm, geom = "lift")
+plot(model_performance_gbm, geom = "gain")
+plot(model_performance_gbm, geom = "prc")
+plot(model_performance_gbm, geom = "histogram")
+plot(model_performance_gbm, geom = "ecdf")
+```
+
+
+```{r, message=FALSE, warning=FALSE}
+# Variable importance with AUC loss
+vi_gbm <- model_parts(explainer_gbm, B = 500)
+plot(vi_gbm)
+```
+
+
+```{r, layout = c(1,1,1), message=FALSE, warning=FALSE, results = FALSE}
+# Custom loss functions (same as in the previous code)}
+loss_logloss <- function(observed, predicted) {
+  -mean(observed * log(predicted) + (1 - observed) * log(1 - predicted))
+}
+
+loss_f1_score <- function(observed, predicted) {
+  predicted_class <- ifelse(predicted > 0.5, 1, 0)
+  TP <- sum(observed == 1 & predicted_class == 1)
+  FP <- sum(observed == 0 & predicted_class == 1)
+  FN <- sum(observed == 1 & predicted_class == 0)
+  F1 <- 2 * TP / (2 * TP + FP + FN)
+  return(1 - F1)  # return 1 - F1 to keep lower values better
+}
+
+# Variable importance with custom loss functions
+vi_gbm_logloss <- model_parts(explainer_gbm, loss_function = loss_logloss, 
+                              B = 500, type = "ratio")
+plot(vi_gbm_logloss)
+
+vi_gbm_f1 <- model_parts(explainer_gbm, loss_function = loss_f1_score, B = 500)
+plot(vi_gbm_f1)
+
+vi_gbm_default <- model_parts(explainer_gbm, B = 500)
+plot(vi_gbm_default)
+```
+
+
+```{r, message=FALSE, warning=FALSE, results = FALSE, layout = c(1,1), fig.width = 10, fig.height = 8}
+# Partial Dependence Plots (PDP)
+pdp_gbm <- model_profile(
+  explainer_gbm,
+  variables = colnames(test_data[, 1:11])
+)
+plot(pdp_gbm) + labs(subtitle = "")
+
+
+# Accumulated Local Effects (ALE) Plots
+ale_gbm <- model_profile(
+  explainer_gbm,
+  type = "accumulated",
+  variables = colnames(test_data[, 1:11])
+)
+plot(ale_gbm) + labs(subtitle = "")
+```

@@ -1,0 +1,360 @@
+---
+title: "The Use of Natural Language Processing in Learning Analytics"
+author: 
+   - name: "Tarid Wongvorachan"
+     affil-id: 1,*
+   - name: "Okan Bulut"
+     affil-id: 1
+affiliations:
+  - id: 1
+    name: "University of Alberta"
+  - id: "*"
+    name: "Corresponding author: Tarid Wongvorachan, `wongvora@ualberta.ca`"
+---
+
+Import data and libraries
+```{r}
+df <- read.csv(url('https://raw.githubusercontent.com/lamethods/data2/refs/heads/main/feedback/df.csv'), stringsAsFactors = FALSE)
+install.packages(c("tidytext", "tm", "textstem", 
+                   "dplyr", "ggplot2", "topicmodels", 
+                   "lexRankr", "sentimentr", "tidyr"))
+
+#-----------------Text Preprocessing------------------------
+library(tidytext) # for text cleaning and tokenization
+#https://www.tidytextmining.com/
+
+library(tm) # for TF-IDF calculation
+library(textstem)
+library(dplyr)
+library(ggplot2)
+library(textmineR)
+
+head(df, 3)
+dim(df)
+```
+
+```{r}
+token <- df %>%
+  unnest_tokens(output = word, input = Student_comment)
+
+token$word <- tolower(token$word)
+token$word <- lemmatize_words(token$word)
+
+custom_stop_words <- c("student", "course", "instructor", "instructors", "students")
+
+token <- token %>% 
+  anti_join(stop_words %>% bind_rows(tibble(word = custom_stop_words, lexicon = "custom")))
+
+
+token$word <- gsub("\\d+", "", token$word) # remove numbers
+token <- token %>% filter(word != "") # remove empty tokens
+token$word <- tm::removePunctuation(token$word) #remove all punctuation
+
+dim(token)
+head(token, 10)
+```
+```{r}
+#----------------TF-IDF---------------------
+
+# Count the occurrence of each word in each document
+word_counts <- token %>% count(document = row_number(), word)
+
+# Calculate raw term frequency
+raw_term_frequency <- word_counts %>% count(word)
+
+# Calculate document frequency
+document_frequency <- word_counts %>% group_by(word) %>% summarise(docs = n_distinct(document))
+
+# Calculate IDF
+idf <- document_frequency %>% mutate(idf = log(nrow(word_counts) / docs))
+
+# Join raw term frequency and IDF
+tf_idf <- raw_term_frequency %>% inner_join(idf, by = "word") %>% mutate(tf_idf = n * idf)
+
+# Plot the top 10 important words
+
+# Select the top 10 words with the highest TF-IDF values
+top_10 <- tf_idf %>% arrange(desc(tf_idf)) %>% head(10)
+top_10
+
+# Create a bar chart
+ggplot(top_10, aes(x = reorder(word, tf_idf), y = tf_idf)) +
+  geom_bar(stat = "identity", fill = "steelblue") +
+  coord_flip() +
+  labs(x = "Words", y = "TF-IDF", title = "Top 10 Words with Highest TF-IDF Values") +
+  theme_minimal()
+```
+
+```{r}
+#--------------------------LDA----------------------------
+library(topicmodels)
+
+# Creating a Document-Term Matrix
+dtm <- token %>%
+  count(document = row_number(), word) %>%
+  cast_dtm(document, word, n)
+
+# Adjusting hyperparameters alpha and beta
+control_list <- list(seed = 1234, alpha = 0.1)
+#higher alpha results in a more specific topic distribution per document.
+#Alpha and k are determined by experimenting
+```
+
+```{r}
+## Perplexity---------------------------
+
+# Loop through various values of k
+perplexity_values <- sapply(2:10, function(k) {
+  model <- LDA(dtm, k = k, control = control_list)
+  perplexity(model)
+})
+plot(2:10, perplexity_values, type = "b", xlab = "Number of Topics (k)", ylab = "Perplexity")
+
+# Add perplexity value labels above each point
+text(2:10, perplexity_values, 
+     labels = round(perplexity_values, 2), 
+     pos = 3,       # Position text above the points
+     cex = 0.8,     # Text size
+     col = "red")   # Text color
+
+
+# Fitting the LDA Model
+lda_model <- LDA(dtm, k = 3 #k is the beta parameter
+                 , control = control_list)
+
+terms(lda_model, 10)
+
+# Get the probabilities of each word in each topic
+lda_terms <- tidy(lda_model, matrix = "beta")
+
+top_terms <- lda_terms %>%
+  group_by(topic) %>%
+  top_n(10, beta) %>%
+  ungroup() %>%
+  arrange(topic, -beta)
+
+# View the top terms for each topic
+print(top_terms, n = 10)
+
+top_terms %>%
+  mutate(term = reorder_within(term, beta, topic)) %>%
+  ggplot(aes(beta, term, fill = factor(topic))) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~ topic, scales = "free") +
+  scale_y_reordered()
+```
+
+```{r}
+#---------------Text Summarization--------------
+library(lexRankr)
+
+# Summarize the text using LexRank
+summary_result <- lexRankr::lexRank(text = df$Student_comment, docId = "create", 
+                                    n = 3,
+                                    usePageRank = TRUE, #to measure relative importance
+                                    continuous = TRUE, #use a weighted graph representation of the sentences
+                                    sentencesAsDocs = TRUE, #useful for single document extractive summarization 
+                                    #text cleaning
+                                    removePunc = TRUE,
+                                    removeNum = TRUE, 
+                                    toLower = FALSE, stemWords = FALSE, rmStopWords = FALSE, #These are set to false to retain meaning of the sentences
+                                    Verbose = TRUE)
+
+#reorder the top 3 sentences to be in order of appearance in article
+order_of_appearance = order(as.integer(gsub("_","",summary_result$sentenceId)))
+
+#extract sentences in order of appearance
+ordered_top_3 = summary_result[order_of_appearance, "sentence"]
+
+ordered_top_3
+
+#Bind Lexrank score to a dataframe
+df_lexrank <- cbind(Index = 1:nrow(df), df)
+
+clean_text_lexrank <- df_lexrank %>%
+  mutate(Student_comment = tolower(Student_comment)) %>%          # Convert to lower case
+  mutate(Student_comment = removePunctuation(Student_comment)) %>% # Remove punctuation
+  mutate(Student_comment = removeNumbers(Student_comment)) %>% #Remove numbers
+  mutate(Student_comment = stripWhitespace(Student_comment))       # Strip whitespace
+
+#We will not remove stopwords / doing lemmatization for this task 
+#because it strips away the meaning. This is because we are doing sentence level analysis, not word-level.
+
+# Use lexRankr to compute LexRank scores
+lexrank_result <- clean_text_lexrank %>%
+  unnest_tokens(sentence, Student_comment, token = "sentences") %>%
+  lexRankr::bind_lexrank(sentence, Index, level = "sentences")
+
+# Arrange and select top sentences
+top_sentences <- lexrank_result %>%
+  arrange(desc(lexrank)) %>%
+  head(n = 5) %>%
+  select(sentence, lexrank)
+
+# # Display the results in a table
+# top_sentences %>%
+#   knitr::kable(caption = "Most Representative Course Review")
+
+#double check if our output is really a dataframe
+class(top_sentences)
+print(top_sentences)
+```
+
+```{r}
+#----------------------Sentiment Analysis------------------
+library(sentimentr)
+library(tidyr)
+
+# clean_text_sentiment <- df %>%
+#   mutate(Student_comment = tolower(Student_comment)) %>%          # Convert to lower case
+#   mutate(Student_comment = removePunctuation(Student_comment)) %>% # Remove punctuation
+#   mutate(Student_comment = removeNumbers(Student_comment)) %>%     # Remove numbers
+#   mutate(Student_comment = removeWords(Student_comment, stopwords("en"))) %>% # Remove stopwords
+#   mutate(Student_comment = stripWhitespace(Student_comment)) %>%     # Strip whitespace
+#   mutate(Student_comment = lemmatize_strings(Student_comment))       # Lemmatize text      
+
+#Clean the sentence minimally to retain meaning of each instance
+clean_text_sentiment <- df %>%
+  mutate(Student_comment = tolower(Student_comment)) %>%          # Convert to lower case
+  mutate(Student_comment = removePunctuation(Student_comment)) # Remove punctuation
+
+# Perform sentiment analysis
+sentiment_result <- clean_text_sentiment %>%
+  mutate(sentiment = sentiment(Student_comment)) %>%
+  unnest(cols = c(sentiment))
+
+# Categorize sentiment
+sentiment_result <- sentiment_result %>%
+  mutate(sentiment_category = case_when(
+    sentiment > 0.1 ~ "Positive",
+    sentiment < -0.1 ~ "Negative",
+    TRUE ~ "Neutral"
+  ))
+
+# Select top 5 for each category
+top_positive <- sentiment_result %>%
+  filter(sentiment_category == "Positive") %>%
+  arrange(desc(sentiment)) %>%
+  head(5)
+
+top_negative <- sentiment_result %>%
+  filter(sentiment_category == "Negative") %>%
+  arrange(sentiment) %>%
+  head(5)
+
+top_neutral <- sentiment_result %>%
+  filter(sentiment_category == "Neutral") %>%
+  arrange(desc(abs(sentiment))) %>%
+  head(5)
+
+top_sentiments <- bind_rows(top_positive, top_negative, top_neutral)
+
+# Visualize the results
+ggplot(top_sentiments, aes(x = reorder(Student_comment, sentiment), y = sentiment, fill = sentiment_category)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  coord_flip() +
+  labs(title = "Top Positive, Negative, and Neutral Sentiments",
+       x = "Comments",
+       y = "Sentiment Score",
+       fill = "Sentiment Category") +
+  scale_fill_manual(values = c("Positive" = "limegreen", "Negative" = "salmon", "Neutral" = "skyblue")) +
+  theme_minimal()
+```
+
+```{r}
+#----------------------Sentiment Analysis by words------------------
+
+# Perform sentiment analysis
+sentiment_result <- token %>%
+  mutate(sentiment = sentiment(word)) %>%
+  unnest(cols = c(sentiment))
+
+
+# Categorize sentiment
+sentiment_result <- sentiment_result %>%
+  mutate(sentiment_category = case_when(
+    sentiment > 0.1 ~ "Positive",
+    sentiment < -0.1 ~ "Negative",
+    TRUE ~ "Neutral"
+  ))
+
+#because there are duplicate words, we need to do this...
+#Aggregate the data by word to get unique words and their corresponding average sentiment scores.
+
+aggregated_sentiments <- sentiment_result %>%
+  group_by(word, sentiment_category) %>%
+  summarize(
+    avg_sentiment = mean(sentiment),
+    count = n(),
+    .groups = 'drop'
+  )
+
+# Select top 5 for each category
+top_positive <- aggregated_sentiments %>%
+  filter(sentiment_category == "Positive") %>%
+  arrange(desc(avg_sentiment)) %>%
+  head(5)
+
+top_negative <- aggregated_sentiments %>%
+  filter(sentiment_category == "Negative") %>%
+  arrange(avg_sentiment) %>%
+  head(5)
+
+top_neutral <- aggregated_sentiments %>%
+  filter(sentiment_category == "Neutral") %>%
+  arrange(desc(abs(avg_sentiment))) %>%
+  head(5)
+
+top_sentiments <- bind_rows(top_positive, top_negative, top_neutral)
+top_sentiments
+
+# Visualize the results
+ggplot(top_sentiments, aes(x = reorder(word, avg_sentiment), y = avg_sentiment, fill = sentiment_category)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  coord_flip() +
+  labs(title = "Top Positive, Negative, and Neutral Sentiments",
+       x = "Comments",
+       y = "Sentiment Score",
+       fill = "Sentiment Category") +
+  scale_fill_manual(values = c("Positive" = "limegreen", "Negative" = "salmon", "Neutral" = "skyblue")) +
+  theme_minimal()
+```
+
+```{r}
+#-----Plotting raw sentiment just to try it out-------------
+
+#If we just map raw sentiment outputs, there will be duplicate words.
+#This is because the top_n function is selecting rows based on their order rather than unique words. This is why you are seeing multiple instances of the word "understand" in the output. To avoid duplicates and get the top unique words, you need to first aggregate the words and then select the top n unique words based on sentiment or frequency.
+
+
+# Select top 5 for each category
+top_positive <- sentiment_result %>%
+  filter(sentiment_category == "Positive") %>%
+  arrange(desc(sentiment)) %>%
+  head(5)
+
+top_negative <- sentiment_result %>%
+  filter(sentiment_category == "Negative") %>%
+  arrange(sentiment) %>%
+  head(5)
+
+top_neutral <- sentiment_result %>%
+  filter(sentiment_category == "Neutral") %>%
+  arrange(desc(abs(sentiment))) %>%
+  head(5)
+
+top_sentiments <- bind_rows(top_positive, top_negative, top_neutral)
+
+# Visualize the results
+ggplot(top_sentiments, aes(x = reorder(word, sentiment), y = sentiment, fill = sentiment_category)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  coord_flip() +
+  labs(title = "Top Positive, Negative, and Neutral Sentiments",
+       x = "Comments",
+       y = "Sentiment Score",
+       fill = "Sentiment Category") +
+  theme_minimal()
+
+#-----------------------END----------------
+```
+

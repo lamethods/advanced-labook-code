@@ -1,0 +1,365 @@
+---
+title: "Individualized Explainable Artificial Intelligence: A Tutorial For Identifying Local and individual Predictions"
+execute:
+  message: FALSE
+author: 
+   - name: "Mohammed Saqr"
+     email: "mohammed.saqr@uef.fi"
+     affil-id: 1,*
+   - name: "Sonsoles López-Pernas"
+     email: "sonsoles.lopez@uef.fi"
+     affil-id: 1
+affiliations:
+  - id: 1
+    name: "University of Eastern Finland"
+  - id: "*"
+    name: "Corresponding author: Mohammed Saqr, `mohammed.saqr@uef.fi`"
+---
+
+
+```{r, include=FALSE}
+# Register an inline hook:
+knitr::knit_hooks$set(inline = function(x) {
+  x <- sprintf("%1.3f", x)
+  paste(x, collapse = ", ")
+})
+```
+
+# Local Explanations
+
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(DALEX)
+library(DALEXtra)
+library(tidymodels)
+library(e1071)
+library(rio)
+student_data <- import("https://github.com/lamethods/data2/raw/main/lms/lms.csv")
+options(scipen = 999)
+```
+
+## Building a machine learning model for explanation
+
+
+```{r}
+# Set a seed for reproducibility of results
+set.seed(265)
+```
+
+
+```{r}
+# Center the selected predictor variables in the dataset. This involves 
+# subtracting the mean from each value, making the mean of each variable zero
+student_data_centered <- student_data |>
+  mutate(across(Freq_Course_View:Active_Days, ~scale(., scale = FALSE) |> as.vector()))
+```
+
+
+```{r}
+# Split the centered dataset into training (80%) and testing (20%) sets
+data_split <- initial_split(student_data_centered, prop = 0.8)
+train_data <- training(data_split)  # Extract the training set
+test_data <- testing(data_split)    # Extract the testing set
+```
+
+
+```{r}
+# Define the formula specifying the relationship between the target variable
+#  (Final_Grade) and the predictors (Freq_Course_View, Freq_Lecture_View, etc.)
+formula <- Final_Grade ~ Freq_Course_View + Freq_Lecture_View + Freq_Forum_Consume +
+  Freq_Forum_Contribute + Regularity_Course_View +
+  Regularity_Lecture_View + Regularity_Forum_Consume +
+  Regularity_Forum_Contribute + Session_Count +
+  Total_Duration + Active_Days
+
+# Fit a Support Vector Machine (SVM) model using the radial kernel
+# The model is trained on the training dataset with the specified formula
+svm_fit_radial <- svm(formula, data = train_data, kernel = "radial")
+```
+
+
+
+```{r}
+# Create an explainer for the SVM model using the DALEX package
+explainer_svm <- explain(
+  model = svm_fit_radial,    # The trained SVM model with a radial kernel
+  data = test_data[,-12],    # Test data excluding the target variable (Final_Grade)
+  y = test_data$Final_Grade, # True values of the target variable for comparison
+  label = "SVM Radial"       # Label for the model in the explainer
+)
+
+# Check the explainer
+print(explainer_svm)
+```
+
+## Breakdown profiles
+
+
+
+
+### Creating and visualizing breakdown results through waterfall plots
+
+
+```{r}
+Instance5 <- test_data[5, ]  # Select any other observation from `test_data` if needed
+```
+
+
+```{r}
+# Set a seed for reproducibility
+set.seed(265)
+
+breakdown_explanation_5 <- predict_parts(
+  explainer = explainer_svm,
+  new_observation = Instance5,
+  type = "break_down"
+)
+```
+
+
+```{r}
+print(breakdown_explanation_5) # Print the breakdown explanation to the console
+```
+
+
+```{r }
+# Plot the breakdown explanation to visualize the contribution of each feature
+plot(breakdown_explanation_5)
+```
+
+ 
+
+### Order of variables
+
+
+```{r, results = FALSE}
+set.seed(265)
+
+# Define a custom order for the features in the breakdown analysis
+Custom_order <- c("Regularity_Course_View", "Regularity_Lecture_View", 
+                  "Regularity_Forum_Consume", "Regularity_Forum_Contribute", 
+                  "Session_Count", "Total_Duration", "Active_Days", 
+                  "Freq_Course_View", "Freq_Lecture_View",
+                  "Freq_Forum_Consume", "Freq_Forum_Contribute")
+
+# Select the fifth instance from the test data for local explanation
+Instance5 <- test_data[5, ]
+
+# Generate a breakdown explanation using the custom order of features
+breakdown_explanation_5_ordered <- predict_parts(
+  explainer = explainer_svm,           # The model explainer
+  new_observation = Instance5,         # The instance to explain
+  order = Custom_order,                # Apply the custom feature order
+  type = "break_down"                  # Use the breakdown method
+)
+
+# Display and plot the breakdown explanation
+print(breakdown_explanation_5_ordered)
+```
+
+ 
+```{r}
+plot(breakdown_explanation_5_ordered)
+```
+ 
+
+
+```{r fig.height=18, fig.width=24}
+#| label: fig-breakdown-all
+#| fig-cap: Breakdown explanation to visualize the contribution of each feature for different feature orders
+set.seed(265)
+
+library(patchwork)  # For combining plots
+
+# Generate 12 different plots with different feature orders
+plots <- list()
+for (i in 1:length(Custom_order)) {
+  random_order <- sample(Custom_order)
+  # Compute breakdown explanation with the current order
+  breakdown_explanation_ordered <- predict_parts(
+    explainer = explainer_svm,
+    new_observation = Instance5,
+    order = random_order,  # Apply the random feature order
+    type = "break_down"
+  )
+  
+  # Plot the breakdown explanation
+  plots[[i]] <- plot(breakdown_explanation_ordered) +
+    ggtitle(paste("Breakdown Explanation - Order", i))
+}
+
+# Combine all plots into a single image
+combined_plot <- wrap_plots(plots, ncol = 3)  # Adjust ncol as needed
+print(combined_plot)
+```
+
+## SHAP (Shapley Additive Explanations) Values: A Detailed Explanation
+
+
+### Advantages of SHAP Values
+
+
+### Using SHAP for Single Instance Explanation
+
+
+```{r}
+# Compute SHAP explanation for a single instance
+# 'type = "shap"' specifies that we want to use SHAP (SHapley Additive 
+# exPlanations) to explain the prediction.
+shap_explanation <- predict_parts(
+  explainer = explainer_svm,    # The explainer object for the SVM model
+  new_observation = Instance5,  # The specific instance that we want to explain
+  type = "shap"                 # Use the SHAP method for generating the explanation
+)
+
+# Print the SHAP explanation
+print(shap_explanation) 
+```
+
+```{r}
+#| label: fig-shap-exp5
+#| fig-cap: SHAP Explanation for Instance 5
+
+# Plot the SHAP explanation
+plot(shap_explanation) 
+```
+
+
+## LIME (Local Interpretable Model-Agnostic Explanations) explanations
+
+
+```{r, fig.width=7, fig.height=3.5}
+# Ensure the necessary DALEXtra methods are loaded
+model_type.dalex_explainer <- model_type.dalex_explainer
+predict_model.dalex_explainer <-  predict_model.dalex_explainer
+
+# Generate LIME explanation using DALEXtra's predict_surrogate function
+Lime_Explainer <- predict_surrogate(
+  explainer = explainer_svm,    # The explainer object for the SVM model
+  new_observation = Instance5,  # The specific instance (Instance5) to be explained
+  n_features = 12,              # Number of features to include in the explanation
+  n_permutations = 1000,        # Number of permutations for the surrogate model
+  type = "lime"                 # Specify that we want a LIME explanation
+)
+
+# Plot the LIME explanation
+plot(Lime_Explainer) 
+```
+
+
+### Multiple instances
+
+```{r}
+# Predict the Final_Grade on the test dataset
+predictions <- predict(svm_fit_radial, newdata = test_data)
+
+# Calculate residuals (the difference between actual grades and predicted grades)
+residuals <- test_data$Final_Grade - predictions
+
+# Define the threshold for significant prediction errors (10 points)
+threshold <- 10
+
+# Identify students whose predicted grades were increased by more than the threshold
+increased_grades <- test_data |>
+  mutate(Residual = residuals) |>
+  filter(Residual <= -threshold)
+
+# Identify students whose predicted grades were decreased by more than the threshold
+decreased_grades <- test_data |>
+  mutate(Residual = residuals) |>
+  filter(Residual >= threshold)
+
+```
+
+```{r}
+# Aggregate SHAP values for students with increased grades
+shap_increased <- predict_parts(
+  explainer = explainer_svm,
+  new_observation = increased_grades |> dplyr::select(-Final_Grade, -Residual),
+  type = "shap",
+  B = 50  # Number of Monte Carlo simulations for SHAP values
+)
+
+# Plot the aggregated SHAP values for increased grades
+plot(shap_increased)  
+```
+
+```{r}
+# Aggregate SHAP values for students with decreased grades
+shap_decreased <- predict_parts(
+  explainer = explainer_svm,
+  new_observation = decreased_grades |> dplyr::select(-Final_Grade, -Residual),
+  type = "shap",
+  B = 50  # Number of Monte Carlo simulations for SHAP values
+)
+
+# Plot the aggregated SHAP values for decreased grades
+plot(shap_decreased)
+```
+
+## Explanation of a classifier model
+
+```{r, warning=FALSE}
+# Step 1: Center the numeric variables in the dataset
+student_data_centered <- student_data |>
+  mutate(across(Freq_Course_View:Active_Days, ~scale(., scale = FALSE) |> as.vector()))
+
+# Step 2: Create a binary classification target variable
+median_grade <- median(student_data_centered$Final_Grade)
+student_data_centered <- student_data_centered |>
+  mutate(Achievement = ifelse(Final_Grade < median_grade, 
+                              "Low_Achievers", "High_Achievers")) |>
+  mutate(Achievement = factor(Achievement, 
+                              levels = c("High_Achievers","Low_Achievers")))
+
+# Step 3: Split the data into training and testing, stratifying by the target variable
+data_split <- initial_split(student_data_centered, prop = 0.8, strata = Achievement)
+train_data <- training(data_split)
+test_data <- testing(data_split)
+
+# Step 4: Train an SVM model using e1071
+svm_model_Classify <- svm(
+  Achievement ~ Freq_Course_View + Freq_Lecture_View + Freq_Forum_Consume +
+    Freq_Forum_Contribute + Regularity_Course_View + 
+    Regularity_Lecture_View + Regularity_Forum_Consume +
+    Regularity_Forum_Contribute + Session_Count + 
+    Total_Duration + Active_Days,
+  data = train_data,
+  probability = TRUE)
+
+# Step 5: Create explainer
+explainer_svm_Classify <- explain(
+  svm_model_Classify,
+  data = test_data |> dplyr::select(-Final_Grade, -Achievement),
+  y = test_data$Achievement,
+  label = "SVM Classification",
+  verbose = FALSE
+)
+```
+
+
+```{r, layout = c(1,1)}
+# Select a single instance for local explanation
+Instance10 <- test_data[10, ]  # You can select any observation from test_data
+
+# Local interpretation using Break Down method
+breakdown_Classify <- predict_parts(
+  explainer = explainer_svm_Classify,
+  new_observation = Instance10 |> dplyr::select(-Final_Grade, -Achievement),
+  type = "break_down")
+
+# Display and plot the breakdown explanation
+plot(breakdown_Classify)
+
+
+# Local interpretation using SHAP method
+Shap_Classify <- predict_parts(
+  explainer = explainer_svm_Classify,
+  new_observation = Instance10 |> dplyr::select(-Final_Grade, -Achievement),
+  type = "shap")
+
+# Display and plot the SHAP explanation
+plot(Shap_Classify)
+```
+

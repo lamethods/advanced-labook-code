@@ -1,0 +1,233 @@
+---
+title: "The Three Levels of Analysis: Variable-centered, Person-centered and Person-specific Analysis in Education"
+author: 
+   - name: "Sonsoles López-Pernas"
+     email: "sonsoles.lopez@uef.fi"
+     affil-id: 1,*
+   - name: "Halil Kayaduman"
+     email: "halil.1.kayaduman@uef.fi"
+     affil-id: 1
+   - name: "Leonie V.D.E. Vogelsmeier"
+     email: "L.V.D.E.Vogelsmeier@tilburguniversity.edu"
+     affil-id: 2
+   - name: "Mohammed Saqr"
+     email: "mohammed.saqr@uef.fi"
+     affil-id: 1
+affiliations:
+  - id: 1
+    name: "University of Eastern Finland"
+  - id: 2
+    name: "Tilburg University"
+  - id: "*"
+    name: "Corresponding author: Sonsoles López-Pernas, `sonsoles.lopez@uef.fi`"
+---
+
+# A tutorial along the heterogeneity spectrum
+
+## Preparing the data and libraries
+
+```{r, results=FALSE, warning=FALSE, message=FALSE}
+library(tidyverse)
+library(flexmix)
+library(lme4)
+library(modeltools)
+library(jtools)
+library(anytime)
+library(rio)
+
+options(scipen = 99)
+```
+
+```{r, echo = FALSE}
+# This is hidden
+theme_set(theme_minimal() + theme(axis.title = element_text(face = "bold")))
+options(digits = 3)
+```
+
+```{r, eval = F}
+# Import data downloaded from https://rdc-psychology.org/grund_fries_senker_2022
+data <- import("gdal18pr18_pd.txt")
+```
+
+```{r, echo = FALSE}
+# Import data downloaded from https://rdc-psychology.org/grund_fries_senker_2022
+data <- import("../../gdal18pr18_pd.txt")
+```
+
+```{r}
+data$Timestamp = anytime(paste(data$DATE, data$TIME))
+```
+
+```{r}
+# Order responses per participant
+data_seq <- data |>
+  filter(KF_P06_VA >= 0) |> # Remove rows where happiness (KF_P06_VA) is invalid
+  filter(KF_SDT_2 >= 0) |> # Remove entries where task value (KF_SDT_2) is invalid
+  group_by(PARTICIPANT) |> # Group by participant
+  arrange(Timestamp) |> # Sort by timestamp
+  mutate(Sequence = seq_along(Timestamp)) |> # Create a sequential ID for responses
+  ungroup()
+```
+
+```{r}
+data_filtered <- data_seq |>
+  select(PARTICIPANT, Sequence, Happiness = KF_P06_VA, TaskValue = KF_SDT_2)
+```
+
+```{r}
+head(data_filtered)
+```
+
+## Variable-centered {#sec-var-cent}
+
+```{r}
+data_meaned <- data_filtered |> 
+  group_by(PARTICIPANT) |> # Group by participant
+  summarize_at(vars(Happiness, TaskValue), mean)  # Summarize (average) columns
+```
+
+```{r}
+model_lm <- lm(Happiness ~ TaskValue, data = data_meaned)
+summ(model_lm) # Summarize the model
+```
+
+```{r}
+label = paste0("Estimate: ", round(model_lm$coefficients["TaskValue"], 3))
+# Plot the regression results
+ggplot(data_meaned, aes(x = TaskValue, y = Happiness)) +
+  geom_point(alpha = 0.5) + # Scatter plot with transparent points
+  geom_smooth(method = "lm", fill = NA) + # Add a linear regression line
+  labs(x = "Task Value", y = "Happiness") # Label the axes
+```
+
+```{r}
+model_lmer <- lmer(Happiness ~ TaskValue + (1 | PARTICIPANT), data = data_filtered)
+summ(model_lmer)  # Summarize the mixed-effects model
+```
+
+## Person-centered
+
+```{r}
+set.seed(022024) # Set seed for reproducibility
+
+# Fit the mixture model with two components (k = 2)
+model_k2 <- flexmix(Happiness ~ TaskValue, k = 2,
+                	data = data_meaned)
+
+# Display the parameters (intercepts, coefficients, and SDs) for each class
+parameters(model_k2)
+
+# Calculates the BIC to be able to compare with other models (e.g., k = 3,4,5...)
+BIC(model_k2)
+```
+
+```{r}
+# Refit the model to obtain more detailed summaries for each class
+rm2 <- refit(model_k2)
+summary(rm2)
+```
+
+```{r}
+cluster_k2 <- clusters(model_k2)
+table(cluster_k2)  # Display the number of participants in each cluster
+```
+
+```{r}
+ggplot(data_meaned, aes(x = TaskValue, y = Happiness, color = factor(cluster_k2))) +
+  geom_point(alpha = 0.5) +  # Plot the points with transparency
+  geom_smooth(method = "lm", se = F) +  # Plot the regression lines
+  scale_color_manual(name ="Class", values = c("darkgreen","firebrick2")) # Color scale
+```
+
+## Person-specific
+
+```{r}
+data_filtered30 <- data_filtered |> group_by(PARTICIPANT) |> filter(n() >= 30)
+```
+
+```{r}
+detrender <- function(data, vars, timevar) {
+  to_detrend <- data
+  for (v in seq_along(vars)) {
+    # Fit linear model for each variable over time and detrend if trend is significant
+    ff <- as.formula(paste0(vars[[v]], " ~ ", timevar))
+    fit <- lm(ff, data = to_detrend)
+    if (anova(fit)$P[1] < 0.05) {  # Check if the trend is statistically significant
+      # Replace values with residuals
+      to_detrend[[vars[v]]][!is.na(to_detrend[[vars[[v]]]])] <- residuals(fit)  
+    }
+  }
+  to_detrend
+}
+```
+
+```{r}
+# Apply the detrending function to the happiness and task value variables
+data_detrended <- detrender(data_filtered30, 
+                            c("Happiness","TaskValue"), "Sequence")
+```
+
+```{r}
+# Create a list of data frames, one for each participant
+data_detrended_list <- split(data_detrended, data_detrended$PARTICIPANT)
+```
+
+```{r}
+# Create an empty list where we will store each participant's model
+model_lm_person <- list()
+
+# Fit the models
+for (k in seq_along(data_detrended_list)) {
+  model_lm_person[[k]] <- lm(Happiness ~ TaskValue, data = data_detrended_list[[k]])
+}
+```
+
+```{r}
+# Create an empty list where we will store each participant's estimate
+est_person <- list()
+
+# Extract slope estimates
+for (k in seq_along(model_lm_person)) {
+  estimate <- tidy(model_lm_person[[k]])[2,]
+  PARTICIPANT <- data_detrended_list[[k]][1, "PARTICIPANT"]
+  est_person[[k]] <- cbind(PARTICIPANT, estimate)
+}
+```
+
+```{r, fig.width= 8, fig.height=3}
+#| label: fig-hist
+#| fig-cap: "Histogram of the slope estimates of each person-specific model. The mean slope is 0.09, and the standard deviation is 0.22, suggesting that there is great variability, centered around close to zero (no relationship)"
+# Combining the individual results into one data frame
+data_est_person <- bind_rows(est_person, .id = "Person")
+
+# Histogram of the estimates to visualize the distribution across participants
+ggplot(data_est_person, aes(x = estimate)) + 
+  # Create histogram with 20 bins
+  geom_histogram(bins = 20, fill = "lightgray", color = "black", alpha = 0.7) +  
+  labs(x = "Estimates", y = "Frequency")   # Label the axes
+```
+
+```{r}
+# Select all participants with significant results
+significant <- data_est_person |> filter(p.value < 0.05) 
+# Select a few (10) participants with non-significant results
+nonsignificant <- data_est_person |> filter(p.value >= 0.05) |> head(10)
+# Combine the IDs of the selected participants for visualization
+ids <- rbind(significant, nonsignificant) |> arrange(desc(estimate)) |> pull(PARTICIPANT)
+```
+
+```{r, fig.width=7, fig.height = 3.4}
+# Get only students in the selected sample
+data_in <- data_detrended |>
+  filter(PARTICIPANT %in% ids) |>  # Filter the selected participants
+  # Convert participant ID to factor for plotting
+  mutate(Person = factor(PARTICIPANT, levels = ids)) 
+```
+
+```{r, fig.width=9, fig.height = 5}
+# Plot individual regression lines for the selected participants
+ggplot(data_in, aes(x = TaskValue, y = Happiness, group = Person)) +
+  geom_jitter(alpha = 0.35) + # Add dots
+  geom_smooth(method = "lm", fill = NA) +  # Add regression lines
+  facet_wrap("Person",  ncol = 8, scales = "fixed")  # Create individual plots
+```

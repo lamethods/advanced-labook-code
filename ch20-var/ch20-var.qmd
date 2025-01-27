@@ -1,0 +1,268 @@
+---
+title: "Idiographic Networks: A tutorial on Graphical Vector Autoregression and Unified Structural Equation Modeling"
+author: 
+   - name: "Mohammed Saqr"
+     email: "mohammed.saqr@uef.fi"
+     affil-id: 1,*
+   - name: "Daryn Dever"
+     email: "ddever@ufl.edu"
+     affil-id: 2
+   - name: "Sonsoles López-Pernas"
+     email: "sonsoles.lopez@uef.fi"
+     affil-id: 1
+affiliations:
+  - id: 1
+    name: "University of Eastern Finland"
+  - id: 2
+    name: "University of Florida"
+  - id: "*"
+    name: "Corresponding author: Mohammed Saqr, `mohammed.saqr@uef.fi`"
+---
+
+## Loading data and pre-processing
+
+```{r setup, include=FALSE}
+library(tidyverse)        # For data manipulation and visualization
+library(skimr)            # For summary statistics of data frames
+library(graphicalVAR)     # Assumed necessary for specific analyzes
+library(qgraph)           # Plotting networks
+library(pompom)           # uSEM implementation
+library(caret)            # For identifying near zero variance predictors
+library(rio)              # For importing the data
+source("aux.R")
+```
+
+```{r}
+# Step 1: Load the dataset
+df <- import("https://github.com/lamethods/data2/raw/main/srl/srl.RDS")
+
+# Step 2: Define variables for the graphical VAR model
+Vars <- c("planning", "monitoring", "effort", "control", 
+          "help", "social", "organizing", "feedback", "evaluating")
+
+# Step 3: Create a "Day" variable for each entry within a person
+df <- df |>
+  group_by(name) |>
+  mutate(Day = seq_along(name)) |>
+  ungroup()
+
+# Step 4: Filter the data for a specific individual named 'Grace'
+Grace_Data <- df |>
+  filter(name == "Grace") |>
+  dplyr::select(all_of(Vars), Day)
+```
+
+### Exploring the data
+
+```{r}
+Grace_descriptives <- skim(Grace_Data)
+print(Grace_descriptives)
+```
+
+```{r fig.width=9, fig.height=6}
+# Reshape the data to long format
+Grace_data_long <- Grace_Data |>
+  pivot_longer(cols = Vars, # Assuming 'id' and 'interaction' are the relevant columns
+               names_to = "variable", 
+               values_to = "value")
+
+# Plot with faceting by variable
+ggplot(Grace_data_long, aes(x = Day, y = value)) +
+  geom_line(color = "blue") +
+  geom_point() +
+  geom_smooth(method = "loess", color = "red", se = FALSE) + # Smoothing (LOESS)
+  facet_wrap(~variable, scales = "free_y", ncol = 3) +
+  theme_minimal() 
+```
+
+### Stationarity
+
+```{r}
+detrender(Grace_Data, vars = Vars, timevar = "Day")
+```
+
+## Estimation of the `graphicalVAR` Model
+
+```{r}
+set.seed(265) # for replicability
+
+# Fit the `graphicalVAR` model to the data from 'Grace' with 'lambda_beta' 
+# to 0.1 to apply moderate regularization 
+GraphVAR_Grace <- graphicalVAR(Grace_Data, beepvar = "Day", lambda_beta = 0.1)
+
+# Output a summary of the fitted model to review the model's structure, 
+# including estimated parameters and fit indices.
+summary(GraphVAR_Grace)
+```
+ 
+## Visualization and interpretation of the `graphicalVAR` Model
+
+
+```{r fig.height=8, fig.width=8, layout = c(1,1)}
+# Visualize the Partial Contemporaneous Correlations (PCC) within the model 
+# using a circular layout.
+plot(GraphVAR_Grace, include = "PCC", layout = "circle", 
+     theme = "colorblind", labels = Vars, titles = F)
+
+# Similarly, visualize the Partial Directed Correlations (PDC), highlighting 
+# temporal directed influences between variables.
+plot(GraphVAR_Grace, include = "PDC", layout = "circle", 
+     theme = "colorblind", labels = Vars, titles = F)
+```
+
+
+```{r fig.height=8, fig.width=8, layout = c(1,1)}
+ plotting <- function(Network, title = "", ...){
+      qgraph(Network,
+       layout = "circle",          # Circular node arrangement
+       title = title,              # Setting a title
+       loop = 0.7,                 # Curvature for self-loops
+       node.width = 2,             # Node width
+       repulsion = 0.8,            # Spacing between nodes
+       label.font = 1,             # Label font styling
+       label.fill.vertical = 1,    
+       label.fill.horizontal = 1,  
+       esize = 7,                  # Edge thickness
+       vsize = 6,                  # Node size
+       color = "#ffeece",          # Light pink node color
+       edge.label.cex = 1.5,       # Edge label size
+       edge.width = 1,             # Edge width
+       border.width = 2,           # Border width for nodes
+       edge.labels = TRUE,         # Show edge labels
+       asize = 3,                  # Arrow size
+       labels = Vars,              # Variable labels,
+       negDashed = TRUE,           # Negative edges dashed
+       theme = "colorblind", ...   )}
+
+plotting(GraphVAR_Grace$PCC)
+plotting(GraphVAR_Grace$PDC)
+```
+
+## Estimation of multiple idiographic models n\>1
+
+```{r, cache = TRUE}
+detrended <- detrender(data = df, vars = Vars, timevar = "Day", groupvar = "name")
+
+# Fit the mlgraphicalVAR model to the data from 'all students with 'lambda_beta' to 0.1 to apply moderate regularization 
+
+GraphVAR_all <- mlGraphicalVAR(detrended, vars = Vars,
+                               idvar = "name", lambda_beta = 0.01,
+                               subjectNetworks = TRUE, verbose = FALSE)
+```
+
+### Plotting the `mlGraphicalVAR` results
+
+```{r fig.height=8, fig.width=8, layout = c(1,1,1)}
+plotting(GraphVAR_all$betweenNet, minimum = 0.05)
+plotting(GraphVAR_all$fixedPCC, minimum = 0.05)
+plotting(GraphVAR_all$fixedPDC, minimum = 0.01)
+```
+
+### Plotting and interpreting subject level networks
+
+```{r}
+for (i in 20:24) {
+  # Apply plotting to subjectPCC and subjectPDC
+  plotting(GraphVAR_all$subjectPCC[[i]], minimum = 0.05, 
+           title = paste("Contemporaneous network for ", GraphVAR_all$ids[[i]]))
+  plotting(GraphVAR_all$subjectPDC[[i]], minimum = 0.05, 
+           title = paste("Temporal network for ", GraphVAR_all$ids[[i]]))
+}
+```
+
+## Unified Structural Equation Modeling (uSEM)
+
+### uSEM analysis
+
+```{r}
+Grace_data_centered <- Grace_Data |>
+  mutate(across(everything(), ~ scale(.x, center = TRUE, scale = TRUE))) |> 
+  select(-Day)
+```
+
+```{r}
+Usim_Grace <- uSEM(var.number = 9, 
+               data = Grace_data_centered, 
+               lag.order = 1, 
+               verbose = FALSE,
+               trim = TRUE)
+```
+
+```{r}
+Usim_Grace_fit <- model_summary(model.fit = Usim_Grace,
+                          var.number = 9, 
+                          lag.order = 1)
+
+cfi_val <- sum(Usim_Grace_fit$cfi)
+tli_val <- Usim_Grace_fit$tli
+rmsea_val <- Usim_Grace_fit$rmsea
+srmr_val <- Usim_Grace_fit$srmr
+
+# Print the values of each fit index
+cat("CFI:", cfi_val, "->", ifelse(cfi_val > 0.95, "Passed", "Failed"), "\n")
+cat("TLI:", tli_val, "->", ifelse(tli_val > 0.95, "Passed", "Failed"), "\n")
+cat("RMSEA:", rmsea_val, "->", ifelse(rmsea_val < 0.08, "Passed", "Failed"), "\n")
+cat("SRMR:", srmr_val, "->", ifelse(srmr_val < 0.08, "Passed", "Failed"), "\n")
+```
+
+```{r, layout = c(1,1), results=F, message = F}
+plot_network_graph (Usim_Grace_fit$beta, var.number = 9)
+
+usemplot(Usim_Grace_fit$beta, var.number = 9, 
+          labels = colnames(Grace_data_centered))
+```
+
+### Analysis of multiple individuals with uSEM
+
+```{r, cache = TRUE}
+df |> 
+  group_by(name) |> 
+  reframe(across(all_of(Vars), ~ nearZeroVar(as.data.frame(.))))
+```
+
+```{r, cache = TRUE}
+# Initialize a list to store the results
+results_list <- list()
+
+# Define a vector of individual names (replace with actual names in your data)
+individual_names <- unique(df$name)
+
+# Loop through each individual dataset
+for (individual in individual_names) {
+  
+  # Filter the dataset for the current individual
+  individual_data <- df |> 
+    filter(name == individual) |>
+    select(all_of(Vars))
+  
+  # Center and scale the data
+  centered_data <- individual_data |>
+    mutate(across(everything(), ~ scale(.x, center = TRUE, scale = TRUE)))
+  
+  # Perform uSEM operations
+  uSEM_result <- uSEM(var.number = 9, 
+                      data = centered_data, 
+                      lag.order = 1, 
+                      verbose = FALSE,
+                      trim = TRUE)
+  
+  # Get the model summary
+  model_fit <- model_summary(model.fit = uSEM_result, 
+                             var.number = 9, 
+                             lag.order = 1)
+  
+  
+  # Store the results in the list
+  results_list[[individual]] <- list(
+    uSEM_result = uSEM_result,
+    model_fit = model_fit
+  )
+}
+```
+
+```{r, eval = F}
+for (i in 20:24) {
+  usemplot(results_list[[i]]$model_fit$beta, var.number = 9, labels = Vars,
+           title = individual_names[i])
+}
+```

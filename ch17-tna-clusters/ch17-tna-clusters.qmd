@@ -1,0 +1,205 @@
+---
+title: "Mining Patterns and Clusters with Transition Network Analysis: A Heterogeneity Approach"
+author: 
+   - name: "Sonsoles López-Pernas"
+     email: "sonsoles.lopez@uef.fi"
+     affil-id: 1,*
+   - name: "Santtu Tikka"
+     email: "santtu.tikka@jyu.fi"
+     affil-id: 2
+   - name: "Mohammed Saqr"
+     email: "mohammed.saqr@uef.fi"
+     affil-id: 1
+affiliations:
+  - id: 1
+    name: "University of Eastern Finland"
+  - id: 2
+    name: "University of Jyväskylä"
+  - id: "*"
+    name: "Corresponding author: Sonsoles López-Pernas, `sonsoles.lopez@uef.fi`"
+---
+
+# Tutorial: Clusters in TNA
+
+```{r, echo = FALSE}
+options(scipen = 9999999)
+options(digits = 2)
+options(max.print = 10)
+```
+
+```{r setup, include=FALSE}
+# Register an inline hook:
+knitr::knit_hooks$set(inline = function(x) {
+  x <- sprintf("%1.2f", x)
+  paste(x, collapse = ", ")
+})
+```
+
+## Importing libraries
+
+```{r}
+library(tidyverse) # install.packages("tidyverse")
+library(TraMineR) # install.packages("TraMineR")
+library(seqHMM) # install.packages("seqHMM")
+library(tna) # install.packages("tna")
+library(rio) # install.packages("rio")
+```
+
+## Preparing the data
+
+```{r}
+simulated_data <- import("https://github.com/lamethods/data2/raw/main/pbl/pbl.RDS")
+```
+
+```{r}
+sequ <- seqdef(simulated_data[, -1])
+```
+
+## Clustering
+ 
+```{r}
+set.seed(1234)
+
+# Creating constants for the number of codes (10) and the number of clusters (4)
+N_CODES <- length(alphabet(sequ))
+N_CLUSTERS <- 4
+
+# Transition probabilities (10 codes, 4 clusters)
+trans_probs <- simulate_transition_probs(N_CODES, N_CLUSTERS, diag_c = 1)
+
+# Initial probabilities (proportion of each code in t = 1)
+init_probs <- as.numeric(prop.table(table(sequ[, 1])[1:N_CODES]))
+
+# Replicate initial probabilities for each cluster
+init_probs <- replicate(N_CLUSTERS, init_probs, simplify = FALSE)
+```
+
+```{r}
+# Build mixture Markov model for 4 clusters
+mmm <- build_mmm(sequ, 
+                  n_clusters = N_CLUSTERS,
+                  transition_probs = trans_probs,
+                  data = simulated_data,
+                  algorithm = 
+                  formula = ~ 0 + Grade,
+                  initial_probs = init_probs)
+```
+
+```{r}
+fit_mmm <- fit_model(
+  mmm, 
+  global_step = TRUE,
+  local_step = TRUE,
+  threads = 60,
+  control_em = list(
+    restart = list(times = 500,  n_optimum = 501),
+    algorithm = "NLOPT_GD_MLSL_LDS"
+))
+```
+
+## Creating and visualizing TNA results
+
+```{r}
+tna_group <- group_tna(fit_mmm$model)
+```
+
+```{r, layout = c(1,1), results = FALSE}
+plot(tna_group)
+```
+
+```{r}
+summary(tna_group)
+```
+
+```{r}
+mmm_stats(fit_mmm$model)
+```
+
+```{rE}
+cnames <- c("Socially triggered", "Argumentation triggered", 
+            "Facilitated discussions", "Information triggered")
+tna_group <- rename_groups(tna_group, cnames)
+```
+
+## Communities
+
+```{r}
+communities_group <- communities(tna_group)
+```
+
+```{r, eval = FALSE}
+plot(communities_group, method = "leading_eigen")
+```
+
+## Centralities
+
+```{r}
+cents <- centralities(
+  tna_group, 
+  measures = c("Betweenness", "InStrength", "OutStrength")
+)
+```
+
+```{r, fig.width=8, fig.height=5}
+plot(cents, ncol = 3) 
+```
+
+```{r, eval = FALSE}
+print(cents)
+```
+
+## Cliques
+
+```{r}
+dyads1 <- cliques(tna_group[["Socially triggered"]], size = 2, threshold = 0.15)
+plot(dyads1)
+```
+ 
+## Other forms of clustering and grouping
+
+### Clustering sequences
+
+```{r, fig.width=10, fig.height=7}
+# Compute dissimilarities between sequences using the LCP method.
+dissimilarities <- seqdist(sequ, method = "LCP", indel = 1)
+
+# Perform hierarchical clustering on the computed dissimilarities 
+clusters_sessionsh <- hclust(as.dist(dissimilarities), method = "ward.D2")
+
+# Cut the hierarchical clustering tree into 4 clusters
+lcp_clusters <- cutree(clusters_sessionsh, k = 4)
+
+# Plot a distribution plot (seqdplot) for the sequences
+# grouped by their cluster assignments.
+seqdplot(sequ, group = lcp_clusters, ncol = 5)
+
+# Define meaningful cluster names based on interpretation of the data.
+cnamesd <- c("Facilitated discussions", "Information triggered", 
+             "Argumentation triggered", "Socially triggered")
+
+# Assign the corresponding cluster names to the cluster assignment vector.
+lcp_clusters <- cnamesd[lcp_clusters]
+```
+
+```{r, layout = c(1,1)}
+seq_tna <- group_tna(sequ, group = lcp_clusters)
+plot(seq_tna)
+```
+
+### Fixed groups
+
+```{r, layout = c(1,1)}
+# TNA using groups instead of clusters
+Achievers <- ifelse(simulated_data$Grade > 50, "High", "Low")
+course_tna <- group_tna(sequ, group = Achievers)
+plot(course_tna)
+```
+
+## Other forms of TNA
+
+```{r, layout = c(1,1), results = FALSE}
+tna_group_scaled <- group_ftna(sequ, group = lcp_clusters)
+plot(tna_group_scaled)
+```
+
+

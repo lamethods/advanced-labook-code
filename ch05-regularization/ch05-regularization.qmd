@@ -1,0 +1,309 @@
+---
+title: "Comparative Analysis of Regularization Methods for Predicting Student Certification"
+warning: FALSE
+author: 
+   - name: "Tian Li"
+     affil-id: 1
+   - name: "Feifei Han"
+     affil-id: 2,*
+   - name: "Jiesi Guo"
+     affil-id: 3
+   - name: "Jinran Wu"
+     affil-id: 3
+affiliations:
+  - id: 1
+    name: "Faculty of Engineering, Architecture and Information Technology, The University of Queensland"
+  - id: 2
+    name: "Institute for Learning Sciences & Teacher Education, Australian Catholic University"
+  - id: 3
+    name: "Institute for Positive Psychology and Education, Australian Catholic University"
+  - id: "*"
+    name: "Corresponding author: Feifei Han, `Feifei.Han@acu.edu.au`"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r}
+library(ggplot2)
+library(patchwork)
+library(dplyr)
+library(caret)
+library(ncvreg)
+library(pROC)
+```
+
+```{r}
+
+repo <- "https://github.com/lamethods/data2/raw/refs/heads/main/"
+dataset <- "mooc/HXPC13_DI_v3_11-13-2019.RDS"
+
+mydata <- readRDS(url(paste0(repo, dataset)))
+data <- mydata[,c("certified","course_id","explored","gender",
+                  "nevents","ndays_act","nplay_video","nchapters",
+                  "nforum_posts","final_cc_cname_DI")]
+data[data == ""] <- NA
+data <- na.omit(data)
+```
+
+
+```{r}
+table(data$certified,data$course_id)
+table(data$certified,data$gender)
+table(data$certified,data$explored)
+table(data$certified,data$final_cc_cname_DI)
+# Ensure 'course_id' is a factor
+data$course_id <- as.factor(data$course_id)
+# Rename specific course names
+levels(data$course_id)[levels(data$course_id) == "HarvardX/PH207x/2012_Fall"] <- "c_id1"
+levels(data$course_id)[levels(data$course_id) == "HarvardX/PH278x/2013_Spring"] <- "c_id2"
+
+plot1 <- ggplot(data, aes(x = course_id, fill = factor(certified))) +
+  geom_bar(position = "fill") +
+  labs(y = "proportion", title = "course_id", fill = "certified") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        plot.title = element_text(hjust = 0.5))
+
+# Bar plot for `certified` vs `gender`
+plot2 <- ggplot(data, aes(x = gender, fill = factor(certified))) +
+  geom_bar(position = "fill") +
+  labs(y = "proportion", title = "gender", fill = "certified") +
+  theme(plot.title = element_text(hjust = 0.5))
+
+# Bar plot for `certified` vs `explored`
+plot3 <- ggplot(data, aes(x = explored, fill = factor(certified))) +
+  geom_bar(position = "fill") +
+  labs(y = "proportion", title = "explored", fill = "certified") +
+  theme(plot.title = element_text(hjust = 0.5))
+
+# Combine the plots in a row
+combined_plot <- plot1 | plot2 | plot3
+
+# Display the combined plot
+combined_plot + plot_layout(guides = 'collect')
+```
+```{r}
+data_long <- data.frame(
+  certified = rep(data$certified, 5),
+  metric = factor(rep(c("nevents", "ndays_act", "nchapters", "nplay_video", "nforum_posts"), each = nrow(data))),
+  value = c(data$nevents, data$ndays_act, data$nchapters, data$nplay_video, data$nforum_posts)
+)
+
+faceted_plot <- ggplot(data_long, aes(x = factor(certified), y = value, fill = factor(certified))) +
+  geom_boxplot() +
+  facet_wrap(~ metric, scales = "free_y", ncol = 2) +
+  labs(title = "Metrics by Certification Status", x = "Certified", y = "Value", fill = "Certified") +
+  theme(plot.title = element_text(hjust = 0.5),
+        strip.text = element_text(size = 12),
+        legend.position = "bottom",
+        aspect.ratio = 0.45) # Adjust the aspect ratio to make plots taller or wider
+
+print(faceted_plot)
+```
+
+
+```{r}
+data2<-as.data.frame(scale(data[,c("nevents", "ndays_act", "nplay_video", "nchapters", "nforum_posts")]))
+data2$certified<-as.factor(data$certified)
+data2$course_id<-as.factor(data$course_id)
+data2$explored<-as.factor(data$explored)
+data2$gender<-as.factor(data$gender)
+data2$final_cc_cname_DI<-as.factor(data$final_cc_cname_DI)
+```
+
+```{r}
+# Assuming data2 is already loaded and prepared
+
+# Split the data into training (80%) and test (20%) sets
+set.seed(123)
+train_indices <- createDataPartition(data2$certified, p = 0.8, list = FALSE)
+train_data <- data2[train_indices, ]
+test_data <- data2[-train_indices, ]
+
+# Prepare the design matrices and response vectors
+y_train <- train_data$certified
+X_train <- model.matrix(certified ~ course_id + gender + final_cc_cname_DI + nevents + ndays_act + nplay_video + explored + nchapters + nforum_posts + final_cc_cname_DI + (course_id + nevents + ndays_act + nplay_video + explored +nchapters + nforum_posts) * gender + (nevents + ndays_act + nplay_video + explored + nchapters + nforum_posts) * course_id, data = train_data)[,-1]
+
+y_test <- test_data$certified
+X_test <- model.matrix(certified ~ course_id + gender + final_cc_cname_DI + nevents + ndays_act + nplay_video + explored +nchapters + nforum_posts + final_cc_cname_DI + (course_id + nevents + ndays_act + nplay_video + explored + nchapters + nforum_posts) * gender + (nevents + ndays_act + nplay_video + explored +nchapters + nforum_posts) * course_id, data = test_data)[,-1]
+
+# Function to perform cross-validation using AUC and fit the model
+cv_and_fit_auc <- function(X, y, penalty, nfolds = 5) {
+  set.seed(123)  # for reproducibility
+  # Fit the model using the entire path
+  fit <- ncvreg(X, y, family = "binomial", penalty = penalty, standardize = FALSE)
+  # Perform k-fold cross-validation
+  folds <- sample(rep(1:nfolds, length.out = length(y)))
+  
+  aucs <- matrix(0, nrow = nfolds, ncol = length(fit$lambda))
+  
+  for (i in 1:nfolds) {
+    test_indices <- which(folds == i)
+    X_train_cv <- X[-test_indices, ]
+    y_train_cv <- y[-test_indices]
+    X_test_cv <- X[test_indices, ]
+    y_test_cv <- y[test_indices]
+    
+    # Fit model on training data
+    cv_fit <- ncvreg(X_train_cv, y_train_cv, family = "binomial", penalty = penalty, lambda = fit$lambda,standardize = FALSE)
+    # Calculate AUC for each lambda
+    for (j in 1:length(cv_fit$lambda)) {
+      beta <- coef(cv_fit)[, j]
+   
+      # Ensure beta is a numeric vector
+      beta <- as.numeric(beta)
+      
+      # Initialize vector to store probabilities
+      probs <- numeric(nrow(X_test_cv))
+      
+      # Loop over each row in X_test_cv
+      for (k in 1:nrow(X_test_cv)) {
+        # Extract the predictor vector for the current row
+        x_row <- X_test_cv[k, , drop = FALSE]
+        
+        # Calculate the linear predictor (including intercept)
+        linear_predictor <- cbind(1, x_row) %*% beta
+        
+        # Calculate the predicted probability
+        probs[k] <- 1 / (1 + exp(-linear_predictor))
+      }
+      
+      # Calculate AUC for the current lambda
+      roc_curve <- roc(y_test_cv, probs, quiet = TRUE)
+      aucs[i, j] <- auc(roc_curve)
+    }
+  }
+  
+  # Calculate mean AUCs across folds
+  mean_aucs <- colMeans(aucs)
+  
+  # Determine the optimal lambda
+  optimal_lambda_index <- which.max(mean_aucs)
+  optimal_lambda <- fit$lambda[optimal_lambda_index]
+  
+  # Plot AUC vs lambda
+  plot(log(fit$lambda), mean_aucs, type = "l", 
+       xlab = "log(Lambda)", ylab = "Mean AUC", 
+       main = paste(penalty, "- Cross-Validation (AUC)"))
+  abline(v = log(optimal_lambda), col = "red", lty = 2)
+  
+  # Extract coefficients at the optimal lambda
+  coef <- coef(fit)[, optimal_lambda_index]
+  
+  return(list(fit = fit, coef = coef, optimal_lambda = optimal_lambda, mean_aucs = mean_aucs))
+}
+
+# Fit models for each penalty
+lasso_results <- cv_and_fit_auc(X_train, y_train, "lasso")
+scad_results <- cv_and_fit_auc(X_train, y_train, "SCAD")
+mcp_results <- cv_and_fit_auc(X_train, y_train, "MCP")
+
+# Function to calculate test performance metrics
+calculate_test_performance <- function(coef, X_test, y_test) {
+  # Ensure X_test is a matrix
+  X_test <- as.matrix(X_test)
+  
+  # Ensure coef is a numeric vector
+  coef <- as.numeric(coef)
+  
+  # Check that coef length matches number of columns in X_test + 1 (for intercept)
+  if (length(coef) != (ncol(X_test) + 1)) {
+    stop("Length of coef must be equal to the number of predictors plus one for the intercept.")
+  }
+  
+  # Initialize vectors to store linear predictors and probabilities
+  linear_predictors <- numeric(nrow(X_test))
+  probs <- numeric(nrow(X_test))
+  
+  # Loop over each row in X_test
+  for (i in 1:nrow(X_test)) {
+    # Extract the predictor vector
+    x_row <- X_test[i, , drop = FALSE]
+    
+    # Calculate the linear predictor (including intercept)
+    linear_predictors[i] <- cbind(1, x_row) %*% coef
+    
+    # Calculate the predicted probability
+    probs[i] <- 1 / (1 + exp(-linear_predictors[i]))
+  }
+  
+  # Convert probabilities to binary predictions
+  predictions <- ifelse(probs > 0.5, 1, 0)
+  
+  # Calculate performance metrics
+  confusion <- confusionMatrix(factor(predictions), factor(y_test))
+  
+  accuracy <- confusion$overall['Accuracy']
+  precision <- confusion$byClass['Pos Pred Value']
+  recall <- confusion$byClass['Sensitivity']
+  f1_score <- 2 * (precision * recall) / (precision + recall)
+  
+  # Calculate AUC
+  roc_curve <- roc(y_test, probs, quiet = TRUE)
+  auc <- auc(roc_curve)
+  
+  return(list(accuracy = accuracy, precision = precision, recall = recall, f1_score = f1_score, auc = auc))
+}
+# Calculate test performance for each method
+lasso_performance <- calculate_test_performance(lasso_results$coef, X_test, y_test)
+scad_performance <- calculate_test_performance(scad_results$coef, X_test, y_test)
+mcp_performance <- calculate_test_performance(mcp_results$coef, X_test, y_test)
+
+# Print results
+cat("\nTest Performance Metrics:\n")
+cat("LASSO:\n")
+cat("Accuracy:", lasso_performance$accuracy, "\n")
+cat("Precision:", lasso_performance$precision, "\n")
+cat("Recall:", lasso_performance$recall, "\n")
+cat("F1 Score:", lasso_performance$f1_score, "\n")
+cat("AUC:", lasso_performance$auc, "\n")
+
+cat("\nSCAD:\n")
+cat("Accuracy:", scad_performance$accuracy, "\n")
+cat("Precision:", scad_performance$precision, "\n")
+cat("Recall:", scad_performance$recall, "\n")
+cat("F1 Score:", scad_performance$f1_score, "\n")
+cat("AUC:", scad_performance$auc, "\n")
+
+cat("\nMCP:\n")
+cat("Accuracy:", mcp_performance$accuracy, "\n")
+cat("Precision:", mcp_performance$precision, "\n")
+cat("Recall:", mcp_performance$recall, "\n")
+cat("F1 Score:", mcp_performance$f1_score, "\n")
+cat("AUC:", mcp_performance$auc, "\n")
+
+# Compare selected variables
+compare_selection <- function(lasso, scad, mcp) {
+  all_vars <- unique(c(names(lasso), names(scad), names(mcp)))
+  selection <- data.frame(Variable = all_vars,
+                          LASSO = ifelse(all_vars %in% names(lasso)[lasso != 0], "Selected", ""),
+                          SCAD = ifelse(all_vars %in% names(scad)[scad != 0], "Selected", ""),
+                          MCP = ifelse(all_vars %in% names(mcp)[mcp != 0], "Selected", ""))
+  return(selection)
+}
+
+variable_selection <- compare_selection(lasso_results$coef, scad_results$coef, mcp_results$coef)
+# Print the first 5 rows of the variable_selection data frame
+print(head(variable_selection, 5))
+
+# Count number of selected variables for each method
+num_vars <- c(sum(lasso_results$coef != 0) - 1,  # Subtract 1 to exclude intercept
+              sum(scad_results$coef != 0) - 1,
+              sum(mcp_results$coef != 0) - 1)
+
+cat("\nNumber of selected variables:\n")
+cat("LASSO:", num_vars[1], "\n")
+cat("SCAD:", num_vars[2], "\n")
+cat("MCP:", num_vars[3], "\n")
+
+# Plot regularization paths
+par(mfrow = c(1, 3))
+plot(lasso_results$fit, main = "LASSO Path")
+abline(v = log(lasso_results$optimal_lambda), col = "red", lty = 2)
+plot(scad_results$fit, main = "SCAD Path")
+abline(v = log(scad_results$optimal_lambda), col = "red", lty = 2)
+plot(mcp_results$fit, main = "MCP Path")
+abline(v = log(mcp_results$optimal_lambda), col = "red", lty = 2)
+```

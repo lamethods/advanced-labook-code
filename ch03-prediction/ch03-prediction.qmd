@@ -1,0 +1,534 @@
+---
+title: "Artificial Intelligence: Using Machine Learning to Predict Students' Performance"
+execute:
+  message: FALSE
+author: 
+   - name: "Mohammed Saqr"
+     email: "mohammed.saqr@uef.fi"
+     affil-id: 1,*
+   - name: "Kamila Misiejuk"
+     email: "kamila.misiejuk@fernuni-hagen.de"
+     affil-id: 2     
+   - name: "Santtu Tikka"
+     email: "sonsoles.lopez@uef.fi"
+     affil-id: 3
+   - name: "Sonsoles López-Pernas"
+     email: "sonsoles.lopez@uef.fi"
+     affil-id: 1
+affiliations:
+  - id: 1
+    name: "University of Eastern Finland"
+  - id: 2
+    name: "FernUniversität in Hagen"
+  - id: 3
+    name: "University of Jyväskylä"
+  - id: "*"
+    name: "Corresponding author: Mohammed Saqr, `mohammed.saqr@uef.fi`"
+---
+
+
+## The dataset used in this chapter
+
+
+### Exploratory Data Analysis
+
+
+```{r,include = FALSE}
+# DO NOT CHANGE ANY OF THESE!
+set.seed(265)
+options(scipen = 999)
+options(digits = 2)
+options(width = 100)
+options(max.print = 80)
+```
+
+
+```{r, message = FALSE, error = FALSE, warning = FALSE}
+# Load required libraries
+library(tidyverse)
+library(correlation)
+library(skimr)
+library(rio)
+library(performance)
+
+student_data <- import("https://github.com/lamethods/data2/raw/main/lms/lms.csv")
+```
+
+
+
+```{r}
+# 1. A detailed summary using skimr
+skim(student_data)
+```
+ 
+ 
+```{r fig.height=5, fig.width=10, fig.cap = "Histograms of all variables"}
+# 2. Histograms of all variables
+student_data |>
+  pivot_longer(everything()) |>
+  ggplot(aes(x = value)) +
+  geom_histogram(bins = 25, fill = "skyblue", color = "black") +
+  facet_wrap(~ name, scales = "free") +
+  theme_minimal()
+```
+
+
+```{r fig.height=5, fig.width=9, message = F, fig.cap= "Correlations between Variables and `Final_Grade`"}
+# 3. Relationship between Variables and `Final_Grade`
+# Calculate correlations with `Final_Grade`
+correlations <- correlation(student_data, method = "pearson")
+correlations |> summary() |> plot() + 
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1))
+```
+
+```{r}
+# Extract and display correlations with `Final_Grade`
+final_grade_correlations <- correlations |>
+  as.data.frame() |>
+  filter(Parameter2 == "Final_Grade") |>
+  arrange(desc(r))
+
+# Print the correlations with `Final_Grade`
+final_grade_correlations
+```
+ 
+
+### Data preparation
+
+
+```{r}
+# Standardize numeric columns in the student_data data frame
+student_data_standardized <- student_data |>
+  mutate(across(
+    where(is.numeric),  # Select all numeric columns
+    ~scale(.) |> # Standardize each column (M=0, SD=1) 
+      as.vector() # Convert to vector
+  ))
+
+# Use skimr package to get a summary of the standardized data
+skim(student_data_standardized)  
+```
+
+ 
+
+```{r, eval=FALSE}
+# Fit a linear regression model and check for multicollinearity
+lm(Final_Grade ~ Freq_Course_View + Freq_Lecture_View + Freq_Forum_Consume +
+                 Freq_Forum_Contribute + Regularity_Course_View + 
+                 Regularity_Lecture_View + Regularity_Forum_Consume +
+                 Regularity_Forum_Contribute + Session_Count + 
+                 Total_Duration + Active_Days,
+   data = student_data_standardized) |>  # Use standardized data for the model
+check_collinearity()    # Check for multicollinearity among predictors
+```
+
+ 
+## Tutorial 1: A Classic Approach to Predictive Modeling
+
+### Loading the necessary libraries
+
+
+```{r}
+# Step 1: Load necessary libraries
+library(randomForest)  # For building the Random Forest model
+library(rsample)       # For data splitting
+library(yardstick)     # For model evaluation
+
+# Set seed for reproducibility
+set.seed(256)
+```
+
+### Splitting the dataset
+
+
+```{r}
+# Step 2: Split the data into training and testing sets
+# Using initial_split from rsample package for an 80/20 split
+data_split <- initial_split(student_data_standardized, prop = 0.8)
+train_data <- training(data_split)
+test_data <- testing(data_split)
+```
+
+### Creating and fitting the model
+
+```{r}
+# Step 3: Create and fit a Random Forest model
+# Building the Random Forest model with 1000 trees
+rf_model <- randomForest(Final_Grade ~ 
+                           Freq_Course_View + Freq_Lecture_View + Freq_Forum_Consume +
+                           Freq_Forum_Contribute + Regularity_Course_View +
+                           Regularity_Lecture_View + Regularity_Forum_Consume +
+                           Regularity_Forum_Contribute + Session_Count +
+                           Total_Duration + Active_Days,
+                         data = train_data, ntree = 1000)
+
+# Print model summary and variable importance
+print(rf_model)
+```
+ 
+```{r }
+# Printing the model summary and variable importance
+importance(rf_model)
+```
+
+### Evaluating the model's performance
+
+
+```{r}
+# Step 4: Make predictions on the test data
+# Making predictions based on the test data using the trained model
+predictions <- predict(rf_model, newdata = test_data)
+```
+
+```{r}
+# Step 5: Evaluate the model's performance
+# Adding predictions to the test data for evaluation
+evaluation_data <- bind_cols(test_data, Predicted_Grade = predictions)
+
+# Evaluating model performance
+performance_metrics <- evaluation_data |>
+  metrics(truth = Final_Grade, estimate = Predicted_Grade)
+
+# Print the model performance metrics
+print(performance_metrics)
+```
+
+```{r,out.width='5in', fig.cap ="Scatter plot comparing predicted vs. actual grades"}
+# Step 6: Visualize predicted vs actual grades
+ggplot(evaluation_data, aes(x = Final_Grade, y = Predicted_Grade)) +
+  geom_point(color = "blue", alpha = 0.5) +
+  geom_abline(intercept = 0, slope = 1, color = "red", linetype = "dashed") +
+  labs(x = "Actual Grade", y = "Predicted Grade") +
+  theme_minimal()
+```
+
+```{r,out.width='5in', fig.cap ="Variable importance"}
+# Enhanced variable importance plot
+# Extracting variable importance from the Random Forest model
+variable_importance <- importance(rf_model)
+var_imp_df <- data.frame(Variable = rownames(variable_importance), 
+                         Importance = variable_importance[, 1])
+
+# Plotting variable importance
+ggplot(var_imp_df, aes(x = reorder(Variable, Importance), y = Importance)) +
+  geom_bar(stat = "identity", fill = "skyblue") +
+  coord_flip() +
+  labs(x = "Variable", y = "Importance") +
+  theme_minimal()
+```
+
+
+```{r, fig.cap="Residual Plot for Random Forest Model with Trend Line."}
+# Calculate residuals
+evaluation_data$residuals <- 
+  evaluation_data$Final_Grade - evaluation_data$Predicted_Grade
+
+
+# Add a smoothed line to show trends
+ggplot(evaluation_data, aes(x = Predicted_Grade, y = residuals)) +
+  geom_point(color = "blue", alpha = 0.5) +
+  geom_hline(yintercept = 0, color = "red", linetype = "dashed") +
+  geom_smooth(method = "loess", color = "green", se = FALSE) +
+  labs(x = "Predicted Grade", y = "Residuals") +
+  theme_minimal()
+```
+
+### Other algorithms
+
+```{r}
+# Step 1: Create and fit a Linear Regression model
+lm_model <- lm(Final_Grade ~ 
+               Freq_Course_View + Freq_Lecture_View + Freq_Forum_Consume +
+               Freq_Forum_Contribute + Regularity_Course_View +
+               Regularity_Lecture_View + Regularity_Forum_Consume +
+               Regularity_Forum_Contribute + Session_Count +
+               Total_Duration + Active_Days,
+               data = student_data_standardized)
+
+# Print model summary
+print(summary(lm_model))
+```
+ 
+```{r}
+# Step 2: Make predictions on the data
+predictions_lm <- predict(lm_model, newdata = student_data_standardized)
+
+# Step 3: Evaluate the model's performance
+# Adding predictions to the data for evaluation
+evaluation_data_lm <- bind_cols(student_data_standardized, 
+                                Predicted_Grade_lm = predictions_lm)
+
+# Evaluating model performance
+performance_metrics_lm <- evaluation_data_lm |>
+  metrics(truth = Final_Grade, estimate = Predicted_Grade_lm)
+
+# Print the model performance metrics
+print(performance_metrics_lm)
+```
+
+```{r, layout = c(1,1), fig.cap = "Linear regression plots"}
+# Step 4: Visualize predicted vs actual grades
+ggplot(evaluation_data_lm, aes(x = Final_Grade, y = Predicted_Grade_lm)) +
+  geom_point(color = "blue", alpha = 0.5) +
+  geom_abline(intercept = 0, slope = 1, color = "red", linetype = "dashed") +
+  labs(x = "Actual Grade", y = "Predicted Grade") +
+  theme_minimal()
+
+# Step 5: Variable importance plot
+# Extracting variable importance from the Linear Regression model
+variable_importance_lm <- abs(coef(lm_model)[-1])  # Exclude intercept
+var_imp_df_lm <- data.frame(Variable = names(variable_importance_lm), 
+                            Importance = variable_importance_lm)
+
+# Plotting variable importance
+ggplot(var_imp_df_lm, aes(x = reorder(Variable, Importance), y = Importance)) +
+  geom_bar(stat = "identity", fill = "skyblue") +
+  coord_flip() +
+  labs(x = "Variable", y = "Absolute Coefficient Value") +
+  theme_minimal()
+```
+
+## Tutorial 2: A Modern Approach to Predictive Modelling using `tidymodels`
+
+```{r}
+# Load necessary libraries
+library(tidymodels) #Loading tidymodels loads all the necessary packages for estimation.
+# Set seed for reproducibility
+set.seed(256)
+
+# Step 1: Split the data into training and testing sets, this step will not be
+# run as it is already done before. In case you are running this code only,
+# you may need to uncomment it.
+# 
+# data_split_tidy <- initial_split(student_data_standardized, prop = 0.8)
+# train_data <- training(data_split_tidy)
+# test_data <- testing(data_split_tidy)
+```
+
+### Select the predictor and target variables
+
+```{r}
+# Step 2: Define the formula
+# We define the formula to specify the relationship between the target variable 
+# 'Final_Grade' and the predictor variables
+formula_tidy <- Final_Grade ~ Freq_Course_View + Freq_Lecture_View + 
+                        Freq_Forum_Consume + Freq_Forum_Contribute + 
+                        Regularity_Course_View + Regularity_Lecture_View + 
+                        Regularity_Forum_Consume + Regularity_Forum_Contribute +
+                        Session_Count + Total_Duration + Active_Days
+```
+
+### Define the Random Forest Model Specification
+
+```{r}
+# Step 3: Define a random forest model specification with `ntree` and `mtry` parameters
+# We specify the random Forest model with 1000 trees and 3 variables randomly 
+# sampled at each split
+rf_specification_tidy <- rand_forest(trees = 1000, mtry = tune()) |>
+  set_mode("regression") |>
+  set_engine("ranger")
+```
+
+
+```{r}
+# Step 4: Create the workflow. We create a workflow that combines the model 
+# specification with the formula
+rf_workflow_tidy <- workflow() |>
+  add_model(rf_specification_tidy) |>
+  add_formula(formula_tidy)
+```
+
+
+```{r, fig.cap="Predicted vs. Actual Grades"}
+#| label: fig-predvsactualtidy
+# Step 5: Fit the random forest model
+# We fit the random forest model to the training data using the workflow
+rf_fitting_tidy <- rf_workflow_tidy |>
+  fit(data = train_data)
+
+# Step 6: Make predictions on the test data and evaluate the model's performance
+# We make predictions on the test data, calculate performance metrics, and 
+# visualize the results
+predictions_tidy <- predict(rf_fitting_tidy, new_data = test_data) |>
+  bind_cols(test_data)
+
+# Calculate performance metrics: R-squared, MAE, and RMSE
+performance_metrics_tidy <- predictions_tidy |>
+  metrics(truth = Final_Grade, estimate = .pred)
+
+# Print the model performance metrics
+print(performance_metrics_tidy)
+
+# Scatter plot comparing actual grades to predicted grades
+ggplot(predictions_tidy, aes(x = Final_Grade, y = .pred)) +
+  geom_point(color = "blue", alpha = 0.5) +
+  geom_abline(intercept = 0, slope = 1, color = "red", linetype = "dashed") +
+  labs(x = "Actual Grade", y = "Predicted Grade") +
+  theme_minimal()
+
+```
+
+### Multiple algorithms
+
+
+#### Model specification
+
+
+```{r}
+# Linear Regression specification
+lr_specification <- linear_reg() |> set_engine("lm")
+
+# SVM specification
+svm_specification <- svm_rbf() |> set_engine("kernlab") |>
+  set_mode("regression")
+
+# Random Forest specification with ntree and mtry parameters
+rf_specification <- rand_forest(trees = 1000, mtry = tune()) |>
+  set_engine("randomForest") |>
+  set_mode("regression")
+
+# KNN specification
+knn_specification <- nearest_neighbor(neighbors = 5) |>
+  set_engine("kknn") |>
+  set_mode("regression")
+
+# Neural Network specification
+nn_specification <- mlp(hidden_units = 10, epochs = 100) |>
+  set_engine("nnet") |>
+  set_mode("regression")
+```
+
+#### Create workflows
+
+
+```{r}
+# Linear Regression workflow
+lr_workflow <- workflow() |>
+  add_model(lr_specification) |>
+  add_formula(formula_tidy)
+
+# SVM workflow
+svm_workflow <- workflow() |>
+  add_model(svm_specification) |>
+  add_formula(formula_tidy)
+
+# Random Forest workflow
+rf_workflow <- workflow() |>
+  add_model(rf_specification) |>
+  add_formula(formula_tidy)
+
+# KNN workflow
+knn_workflow <- workflow() |>
+  add_model(knn_specification) |>
+  add_formula(formula_tidy)
+
+# Neural Network workflow
+nn_workflow <- workflow() |>
+  add_model(nn_specification) |>
+  add_formula(formula_tidy)
+```
+
+#### Fit the models
+
+```{r}
+# Fit the Linear Regression model
+lr_fitting <- lr_workflow |>
+  fit(data = train_data)
+
+# Fit the SVM model
+svm_fitting <- svm_workflow |>
+  fit(data = train_data)
+
+# Fit the Random Forest model
+rf_fitting <- rf_workflow |>
+  fit(data = train_data)
+
+# Fit the KNN model
+knn_fitting <- knn_workflow |>
+  fit(data = train_data)
+
+# Fit the Neural Network model
+nn_fitting <- nn_workflow |>
+  fit(data = train_data)
+```
+
+#### Calculate Fit Indices and Residuals
+
+```{r}
+# Function to calculate metrics and residuals
+calculate_metrics <- function(model_fitting, test_data, truth_col = "Final_Grade") {
+  # Make predictions
+  predictions <- predict(model_fitting, new_data = test_data) |>
+    bind_cols(test_data)
+  
+  # Calculate residuals
+  residuals <- predictions |>
+    mutate(residuals = !!sym(truth_col) - .pred)
+  
+  # Calculate performance metrics
+  performance_metrics <- residuals |>
+    metrics(truth = !!sym(truth_col), estimate = .pred)
+  
+  list(performance_metrics = performance_metrics, residuals = residuals)
+}
+
+# Calculate metrics and residuals for each model
+lr_results <- calculate_metrics(lr_fitting, test_data)
+svm_results <- calculate_metrics(svm_fitting, test_data)
+rf_results <- calculate_metrics(rf_fitting, test_data)
+knn_results <- calculate_metrics(knn_fitting, test_data)
+nn_results <- calculate_metrics(nn_fitting, test_data)
+
+# Combine predictions and residuals
+lr_residuals <- lr_results$residuals |> mutate(model = "Linear Regression")
+svm_residuals <- svm_results$residuals |> mutate(model = "SVM")
+rf_residuals <- rf_results$residuals |> mutate(model = "Random Forest")
+knn_residuals <- knn_results$residuals |> mutate(model = "KNN")
+nn_residuals <- nn_results$residuals |> mutate(model = "Neural Network")
+
+combined_residuals <- bind_rows(lr_residuals, svm_residuals, 
+                                rf_residuals, knn_residuals, nn_residuals)
+
+# Extract and combine performance metrics
+performance_metrics <- bind_rows(
+  lr_results$performance_metrics |> mutate(model = "Linear Regression"),
+  svm_results$performance_metrics |> mutate(model = "SVM"),
+  rf_results$performance_metrics |> mutate(model = "Random Forest"),
+  knn_results$performance_metrics |> mutate(model = "KNN"),
+  nn_results$performance_metrics |> mutate(model = "Neural Network")
+) |> arrange(.metric)
+
+# Print performance metrics
+print(performance_metrics)
+```
+
+
+```{r fig.height=4, fig.width=7, fig.cap = "Performance metrics by model"}
+# Plot performance metrics
+performance_metrics |>
+  ggplot(aes(x = model, y = .estimate, fill = model)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  facet_wrap(~ .metric, scales = "free") +
+  labs(x = "Model",
+       y = "Metric Value") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+
+```{r fig.height=4, fig.width=6.3, fig.cap = "Actual vs Predicted Final Grade", fig.cap="Plot actual vs. predicted with a line matching the slope of actual vs. predicted"}
+combined_residuals |>
+  ggplot(aes(x = Final_Grade, y = .pred, color = model)) +
+  geom_point() +
+  # Add a linear model fit line
+  geom_smooth(method = "lm", se = FALSE, linetype = "dashed", color = "black") +  
+  facet_wrap(~ model) +
+  labs(x = "Actual Final Grade",
+       y = "Predicted Final Grade") +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+```
+
+
+ 
